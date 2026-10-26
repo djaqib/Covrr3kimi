@@ -1,11 +1,4 @@
-# Telegram Bot
-python-telegram-bot[ext]==21.11
-flask
-
-# Database
-psycopg2-binary==2.9.9  # PostgreSQL adapter
-dotenv
-
-# Optional: For video compression
-ffmpeg-python==0.2.0
+python-telegram-bot[webhooks]==21.11
 psycopg2-binary==2.9.9
+dotenv
+ffmpeg-python==0.2.0
