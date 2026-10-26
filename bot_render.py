@@ -52,7 +52,7 @@ PORT = int(os.environ.get("PORT", 10000))
 WEBHOOK_URL = os.environ.get("RENDER_EXTERNAL_URL", os.environ.get("WEBHOOK_URL", ""))
 USE_WEBHOOK = os.environ.get("USE_WEBHOOK", "true").lower() == "true"
 
-DEFAULT_ADMIN_IDS = [7599601301]
+DEFAULT_ADMIN_IDS = [8780988453]
 
 class ConfigKeys:
     PHOTO_APPROVAL_MODE = "photo_approval_mode"
