@@ -1,4 +1,4 @@
-python-telegram-bot[webhooks]==21.11
+python-telegram-bot[webhooks,job-queue]==21.11
 psycopg2-binary==2.9.9
 dotenv
 ffmpeg-python==0.2.0
