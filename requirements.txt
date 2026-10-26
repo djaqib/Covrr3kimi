@@ -1,0 +1,9 @@
+# Telegram Bot
+python-telegram-bot==20.7
+
+# Database
+psycopg2-binary==2.9.9  # PostgreSQL adapter (optional, falls back to SQLite)
+dotenv
+
+# Optional: For video compression (future feature)
+# ffmpeg-python==0.2.0
