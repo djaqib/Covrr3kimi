@@ -65,6 +65,29 @@ class Database:
             self.use_postgres = False
             self._init_sqlite()
 
+      def _init_postgres(self):
+        """Initialize PostgreSQL connection pool"""
+        try:
+            database_url = os.getenv("DATABASE_URL")
+            # Handle Railway/Heroku format
+            if database_url.startswith("postgres://"):
+                database_url = database_url.replace("postgres://", "postgresql://", 1)
+            
+            # ---> ADD THIS LINE TO FIX THE SSLMODE ERROR <---
+            if database_url:
+                database_url = database_url.replace("sslmode=Disable", "sslmode=disable")
+
+            self.connection_pool = psycopg2.pool.ThreadedConnectionPool(
+                minconn=1,
+                maxconn=10,
+                dsn=database_url
+            )
+            logger.info("PostgreSQL connection pool created")
+        except Exception as e:
+            logger.error(f"PostgreSQL connection failed: {e}, falling back to SQLite")
+            self.use_postgres = False
+            self._init_sqlite()
+
     def _init_sqlite(self):
         """Initialize SQLite as fallback"""
         self.sqlite_conn = sqlite3.connect(
