@@ -46,26 +46,7 @@ class Database:
         self._create_tables()
         logger.info(f"Database initialized: {'PostgreSQL' if self.use_postgres else 'SQLite'}")
 
-    def _init_postgres(self):
-        """Initialize PostgreSQL connection pool"""
-        try:
-            database_url = os.getenv("DATABASE_URL")
-            # Handle Railway/Heroku format
-            if database_url.startswith("postgres://"):
-                database_url = database_url.replace("postgres://", "postgresql://", 1)
-
-            self.connection_pool = psycopg2.pool.ThreadedConnectionPool(
-                minconn=1,
-                maxconn=10,
-                dsn=database_url
-            )
-            logger.info("PostgreSQL connection pool created")
-        except Exception as e:
-            logger.error(f"PostgreSQL connection failed: {e}, falling back to SQLite")
-            self.use_postgres = False
-            self._init_sqlite()
-
-      def _init_postgres(self):
+        def _init_postgres(self):
         """Initialize PostgreSQL connection pool"""
         try:
             database_url = os.getenv("DATABASE_URL")
@@ -87,6 +68,7 @@ class Database:
             logger.error(f"PostgreSQL connection failed: {e}, falling back to SQLite")
             self.use_postgres = False
             self._init_sqlite()
+
 
     def _init_sqlite(self):
         """Initialize SQLite as fallback"""
