@@ -1,6 +1,6 @@
 # Telegram Bot
 python-telegram-bot[job-queue]==21.11
-pip install flask
+flask
 
 
 
