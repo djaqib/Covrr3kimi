@@ -38,32 +38,6 @@ except ImportError:
 from logging.handlers import RotatingFileHandler
 import os
 from threading import Thread
-from flask import Flask
-
-# --- Minimal Flask Web Server for Render Health Checks ---
-app = Flask('')
-
-
-@app.route('/')
-def home():
-  return 'Bot is alive and running!'
-
-
-def run_web():
-  port = int(os.environ.get('PORT', 10000))
-  app.run(host='0.0.0.0', port=port)
-
-
-def keep_alive():
-  t = Thread(target=run_web)
-  t.start()
-
-
-# --- Start Web Server before starting your Bot/Scheduler ---
-if __name__ == '__main__':
-  keep_alive()
-  # [Insert your existing bot polling / scheduler startup code here]
-
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s - %(levelname)s - %(message)s",
