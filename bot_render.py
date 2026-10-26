@@ -973,11 +973,6 @@ def main():
 
     logger.info(f"Mode: {'Webhook' if USE_WEBHOOK else 'Polling'}, Port: {PORT}")
 
-    # Start health server (REQUIRED for Render)
-    health_thread = threading.Thread(target=run_health_server, daemon=True)
-    health_thread.start()
-    logger.info("✅ Health server started")
-
     app = ApplicationBuilder().token(BOT_TOKEN).build()
 
     # Handlers
@@ -1015,6 +1010,9 @@ def main():
         webhook_path = f"/webhook/{BOT_TOKEN}"
         full_url = f"{WEBHOOK_URL}{webhook_path}"
         logger.info(f"Webhook: {full_url}")
+        
+        # app.run_webhook starts the Tornado server on PORT (10000) 
+        # and satisfies Render's port requirement automatically!
         app.run_webhook(
             listen="0.0.0.0",
             port=PORT,
@@ -1025,6 +1023,3 @@ def main():
     else:
         logger.info("Running in polling mode...")
         app.run_polling(allowed_updates=Update.ALL_TYPES)
-
-if __name__ == "__main__":
-    main()
