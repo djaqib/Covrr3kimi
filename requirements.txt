@@ -1,7 +1,7 @@
 # Telegram Bot
 python-telegram-bot[job-queue]==21.11
 flask
-
+python-telegram-bot[webhooks]
 
 
 # Database
