@@ -46,7 +46,7 @@ class Database:
         self._create_tables()
         logger.info(f"Database initialized: {'PostgreSQL' if self.use_postgres else 'SQLite'}")
 
-        def _init_postgres(self):
+    def _init_postgres(self):
         """Initialize PostgreSQL connection pool"""
         try:
             database_url = os.getenv("DATABASE_URL")
