@@ -340,8 +340,6 @@ def format_duration(seconds: int) -> str:
 
 def strip_media_metadata(media):
     """Remove sender name and captions from media"""
-    # This is handled when creating InputMedia objects
-    # We simply don't include caption or parse_mode
     return media
 
 # -----------------------------
@@ -451,83 +449,49 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 
-
 @admin_only
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     strip_status = "ON ✅" if settings.get(ConfigKeys.STRIP_METADATA, True) else "OFF ❌"
 
-    text = (
-        "📋 <b>Available Commands:</b>
+    text = f"""📋 <b>Available Commands:</b>
 
-"
-        "<b>Basic:</b>
-"
-        "/start – Show bot status & menu
-"
-        "/help – Show this help
-"
-        "/id – Get your Telegram ID
-"
-        "/ping – Check bot latency
+<b>Basic:</b>
+/start – Show bot status & menu
+/help – Show this help
+/id – Get your Telegram ID
+/ping – Check bot latency
 
-"
-        "<b>Admin Management:</b>
-"
-        "/addadmin &lt;user_id&gt; – Add new admin
-"
-        "/removeadmin &lt;user_id&gt; – Remove admin
-"
-        "/listadmins – List all admins
+<b>Admin Management:</b>
+/addadmin &lt;user_id&gt; – Add new admin
+/removeadmin &lt;user_id&gt; – Remove admin
+/listadmins – List all admins
 
-"
-        "<b>Media Settings:</b>
-"
-        "/toggle_photos – Toggle accept photos
-"
-        "/toggle_documents – Toggle accept documents
-"
-        "/toggle_photo_approval – Toggle photo approval mode
-"
-        "/toggle_doc_approval – Toggle document approval mode
-"
-        "/toggle_strip – Toggle strip names/captions
+<b>Media Settings:</b>
+/toggle_photos – Toggle accept photos
+/toggle_documents – Toggle accept documents
+/toggle_photo_approval – Toggle photo approval mode
+/toggle_doc_approval – Toggle document approval mode
+/toggle_strip – Toggle strip names/captions
 
-"
-        "<b>Configuration:</b>
-"
-        "/settings – Open settings menu
-"
-        "/set_timeout &lt;seconds&gt; – Set batch timeout
-"
-        "/set_album_size &lt;1-10&gt; – Set album size
-"
-        "/toggle_caption – Toggle auto-captions
-"
-        "/set_caption &lt;text&gt; – Set caption template
+<b>Configuration:</b>
+/settings – Open settings menu
+/set_timeout &lt;seconds&gt; – Set batch timeout
+/set_album_size &lt;1-10&gt; – Set album size
+/toggle_caption – Toggle auto-captions
+/set_caption &lt;text&gt; – Set caption template
 
-"
-        "<b>Media Control:</b>
-"
-        "/approve – Approve pending media
-"
-        "/reject – Reject pending media
-"
-        "/flush – Send pending videos now
-"
-        "/clear – Clear current queue
+<b>Media Control:</b>
+/approve – Approve pending media
+/reject – Reject pending media
+/flush – Send pending videos now
+/clear – Clear current queue
 
-"
-        "<b>Info:</b>
-"
-        "/stats – Detailed statistics
-"
-        "/export – Export stats to file
-"
-        "/dbinfo – Database information
+<b>Info:</b>
+/stats – Detailed statistics
+/export – Export stats to file
+/dbinfo – Database information
 
-"
-        f"<i>Strip metadata (sender/captions): {strip_status}</i>"
-    )
+<i>Strip metadata (sender/captions): {strip_status}</i>"""
     await update.message.reply_text(text, parse_mode="HTML")
 
 
@@ -541,8 +505,7 @@ async def ping_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     start_time = time.time()
     msg = await update.message.reply_text("🏓 Pong!")
     latency = (time.time() - start_time) * 1000
-    await msg.edit_text(f"🏓 Pong!
-⚡ Latency: {latency:.2f}ms")
+    await msg.edit_text(f"🏓 Pong!\n⚡ Latency: {latency:.2f}ms")
 
 
 # ==================== ADMIN MANAGEMENT COMMANDS ====================
@@ -552,8 +515,7 @@ async def add_admin_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Add a new admin by user ID"""
     if not context.args:
         await update.message.reply_text(
-            "Usage: /addadmin &lt;user_id&gt; [username]
-"
+            "Usage: /addadmin &lt;user_id&gt; [username]\n"
             "Example: /addadmin 123456789 johndoe",
             parse_mode="HTML"
         )
@@ -571,8 +533,7 @@ async def add_admin_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         if success:
             await update.message.reply_text(
-                f"✅ Added admin: <code>{new_admin_id}</code>
-"
+                f"✅ Added admin: <code>{new_admin_id}</code>\n"
                 f"Username: @{username if username else 'N/A'}",
                 parse_mode="HTML"
             )
@@ -631,9 +592,7 @@ async def list_admins_command(update: Update, context: ContextTypes.DEFAULT_TYPE
         await update.message.reply_text("No admins found.")
         return
 
-    text = "👥 <b>Admin Users:</b>
-
-"
+    text = "👥 <b>Admin Users:</b>\n\n"
 
     for i, admin in enumerate(admins, 1):
         user_id = admin.get('user_id', 'Unknown')
@@ -641,16 +600,11 @@ async def list_admins_command(update: Update, context: ContextTypes.DEFAULT_TYPE
         first_name = admin.get('first_name', 'N/A')
         source = admin.get('source', 'database' if DATABASE_ENABLED else 'default')
 
-        text += f"{i}. <code>{user_id}</code>
-"
-        text += f"   Name: {first_name}
-"
+        text += f"{i}. <code>{user_id}</code>\n"
+        text += f"   Name: {first_name}\n"
         if username:
-            text += f"   Username: @{username}
-"
-        text += f"   Source: {source}
-
-"
+            text += f"   Username: @{username}\n"
+        text += f"   Source: {source}\n\n"
 
     await update.message.reply_text(text, parse_mode="HTML")
 
@@ -696,15 +650,10 @@ async def toggle_strip_command(update: Update, context: ContextTypes.DEFAULT_TYP
     status = "ON ✅" if new_value else "OFF ❌"
 
     explanation = (
-        f"📝 Strip metadata is now {status}
-
-"
-        f"When ON:
-"
-        f"• Removes sender name from forwarded media
-"
-        f"• Removes original captions
-"
+        f"📝 Strip metadata is now {status}\n\n"
+        f"When ON:\n"
+        f"• Removes sender name from forwarded media\n"
+        f"• Removes original captions\n"
         f"• Sends clean media only"
     )
     await update.message.reply_text(explanation)
@@ -718,11 +667,8 @@ async def toggle_caption_command(update: Update, context: ContextTypes.DEFAULT_T
 
     if new_value:
         await update.message.reply_text(
-            f"📝 Auto-caption mode is now {status}
-
-"
-            f"Send /set_caption &lt;your text&gt; to set the caption template
-"
+            f"📝 Auto-caption mode is now {status}\n\n"
+            f"Send /set_caption &lt;your text&gt; to set the caption template\n"
             f"Variables: {'{index}'}, {'{total}'}, {'{duration}'}, {'{size}'}",
             parse_mode="HTML"
         )
@@ -736,12 +682,8 @@ async def set_caption_command(update: Update, context: ContextTypes.DEFAULT_TYPE
     if not context.args:
         current = settings.get(ConfigKeys.CAPTION_TEMPLATE, "")
         await update.message.reply_text(
-            f"Current caption template:
-<code>{current}</code>
-
-"
-            f"Usage: /set_caption Your caption here
-"
+            f"Current caption template:\n<code>{current}</code>\n\n"
+            f"Usage: /set_caption Your caption here\n"
             f"Variables: {'{index}'}, {'{total}'}, {'{duration}'}, {'{size}'}",
             parse_mode="HTML"
         )
@@ -749,9 +691,7 @@ async def set_caption_command(update: Update, context: ContextTypes.DEFAULT_TYPE
 
     caption = " ".join(context.args)
     settings.set(ConfigKeys.CAPTION_TEMPLATE, caption)
-    await update.message.reply_text(f"✅ Caption template set:
-
-{caption}")
+    await update.message.reply_text(f"✅ Caption template set:\n\n{caption}")
 
 
 @admin_only
@@ -759,8 +699,7 @@ async def set_timeout_command(update: Update, context: ContextTypes.DEFAULT_TYPE
     """Set batch flush timeout"""
     if not context.args:
         current = settings.get(ConfigKeys.FLUSH_TIMEOUT, 60)
-        await update.message.reply_text(f"Current timeout: {current}s
-Usage: /set_timeout 120")
+        await update.message.reply_text(f"Current timeout: {current}s\nUsage: /set_timeout 120")
         return
 
     try:
@@ -780,8 +719,7 @@ async def set_album_size_command(update: Update, context: ContextTypes.DEFAULT_T
     """Set album size"""
     if not context.args:
         current = settings.get(ConfigKeys.ALBUM_SIZE, 10)
-        await update.message.reply_text(f"Current album size: {current}
-Usage: /set_album_size 5")
+        await update.message.reply_text(f"Current album size: {current}\nUsage: /set_album_size 5")
         return
 
     try:
@@ -814,34 +752,18 @@ async def show_settings_menu(update: Update, context: ContextTypes.DEFAULT_TYPE)
     album_size = settings.get(ConfigKeys.ALBUM_SIZE, 10)
 
     text = (
-        f"⚙️ <b>Bot Settings</b>
-
-"
-        f"<b>Media Handling:</b>
-"
-        f"• Strip names/captions: {'ON ✅' if strip_meta else 'OFF ❌'}
-"
-        f"• Accept photos: {'ON ✅' if accept_photos else 'OFF ❌'}
-"
-        f"• Accept documents: {'ON ✅' if accept_docs else 'OFF ❌'}
-
-"
-        f"<b>Approval Modes:</b>
-"
-        f"• Photo approval: {'ON ✅' if photo_approval else 'OFF ❌'}
-"
-        f"• Document approval: {'ON ✅' if doc_approval else 'OFF ❌'}
-
-"
-        f"<b>Other Settings:</b>
-"
-        f"• Auto captions: {'ON ✅' if auto_caption else 'OFF ❌'}
-"
-        f"• Batch timeout: {flush_timeout}s
-"
-        f"• Album size: {album_size}
-
-"
+        f"⚙️ <b>Bot Settings</b>\n\n"
+        f"<b>Media Handling:</b>\n"
+        f"• Strip names/captions: {'ON ✅' if strip_meta else 'OFF ❌'}\n"
+        f"• Accept photos: {'ON ✅' if accept_photos else 'OFF ❌'}\n"
+        f"• Accept documents: {'ON ✅' if accept_docs else 'OFF ❌'}\n\n"
+        f"<b>Approval Modes:</b>\n"
+        f"• Photo approval: {'ON ✅' if photo_approval else 'OFF ❌'}\n"
+        f"• Document approval: {'ON ✅' if doc_approval else 'OFF ❌'}\n\n"
+        f"<b>Other Settings:</b>\n"
+        f"• Auto captions: {'ON ✅' if auto_caption else 'OFF ❌'}\n"
+        f"• Batch timeout: {flush_timeout}s\n"
+        f"• Album size: {album_size}\n\n"
         f"<i>All settings are automatically saved and persist across restarts.</i>"
     )
 
@@ -856,7 +778,6 @@ async def show_settings_menu(update: Update, context: ContextTypes.DEFAULT_TYPE)
 @admin_only
 async def approve_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Approve pending media"""
-    # Check for pending photo
     pending_photo = context.user_data.get("pending_photo")
     pending_doc = context.user_data.get("pending_document")
 
@@ -957,36 +878,19 @@ async def stats_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     pending_count = db.get_pending_count() if DATABASE_ENABLED else 0
 
     text = (
-        f"📊 <b>Bot Statistics</b>
-
-"
-        f"<b>Media Processed:</b>
-"
-        f"• Videos: {total_videos}
-"
-        f"• Photos: {total_photos}
-"
-        f"• Documents: {total_docs}
-
-"
-        f"<b>Batches:</b>
-"
-        f"• Total batches: {total_batches}
-
-"
-        f"<b>Rejections:</b>
-"
-        f"• Photos rejected: {rejected_photos}
-"
-        f"• Documents rejected: {rejected_docs}
-
-"
-        f"<b>System:</b>
-"
-        f"• Uptime: {uptime}
-"
-        f"• Pending approvals: {pending_count}
-"
+        f"📊 <b>Bot Statistics</b>\n\n"
+        f"<b>Media Processed:</b>\n"
+        f"• Videos: {total_videos}\n"
+        f"• Photos: {total_photos}\n"
+        f"• Documents: {total_docs}\n\n"
+        f"<b>Batches:</b>\n"
+        f"• Total batches: {total_batches}\n\n"
+        f"<b>Rejections:</b>\n"
+        f"• Photos rejected: {rejected_photos}\n"
+        f"• Documents rejected: {rejected_docs}\n\n"
+        f"<b>System:</b>\n"
+        f"• Uptime: {uptime}\n"
+        f"• Pending approvals: {pending_count}\n"
         f"• Database: {'PostgreSQL ✅' if DATABASE_ENABLED and db.use_postgres else 'SQLite' if DATABASE_ENABLED else 'Disabled'}"
     )
 
@@ -1026,7 +930,6 @@ async def db_info_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     db_type = "PostgreSQL" if db.use_postgres else "SQLite"
 
-    # Get table counts
     with db.get_connection() as conn:
         cursor = conn.cursor()
 
@@ -1043,21 +946,14 @@ async def db_info_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         cursor.close()
 
     text = (
-        f"🗄️ <b>Database Information</b>
-
-"
-        f"<b>Type:</b> {db_type}
-"
-        f"<b>Status:</b> Connected ✅
-
-"
-        f"<b>Table Counts:</b>
-"
+        f"🗄️ <b>Database Information</b>\n\n"
+        f"<b>Type:</b> {db_type}\n"
+        f"<b>Status:</b> Connected ✅\n\n"
+        f"<b>Table Counts:</b>\n"
     )
 
     for table, count in counts.items():
-        text += f"• {table}: {count}
-"
+        text += f"• {table}: {count}\n"
 
     await update.message.reply_text(text, parse_mode="HTML")
 
@@ -1069,11 +965,9 @@ async def handle_video(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handle incoming videos"""
     message = update.message
 
-    # Update activity
     if DATABASE_ENABLED:
         db.set_setting(ConfigKeys.LAST_VIDEO_TIME, time.time())
 
-    # Try to delete original message
     try:
         await message.delete()
     except Exception as e:
@@ -1084,7 +978,6 @@ async def handle_video(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     video = message.video
 
-    # Create video info
     video_info = VideoInfo(
         file_id=video.file_id,
         file_unique_id=video.file_unique_id,
@@ -1096,7 +989,6 @@ async def handle_video(update: Update, context: ContextTypes.DEFAULT_TYPE):
         checksum=generate_checksum(video.file_size or 0, video.duration or 0, video.width or 0, video.height or 0)
     )
 
-    # Check for duplicates
     if DATABASE_ENABLED:
         if db.video_exists(file_unique_id=video.file_unique_id):
             logger.info(f"Duplicate video (ID): {video.file_unique_id}")
@@ -1106,7 +998,6 @@ async def handle_video(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text("⚠️ Duplicate video detected.")
             return
 
-    # Add to database
     if DATABASE_ENABLED:
         db.add_video(
             file_id=video.file_id,
@@ -1121,25 +1012,20 @@ async def handle_video(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         db.increment_stat("total_videos")
 
-    # Update batch count
     batch_count = settings.get(ConfigKeys.BATCH_COUNT, 0) + 1
     settings.set(ConfigKeys.BATCH_COUNT, batch_count)
 
-    # Progress indicator
     if batch_count % 5 == 0:
         await update.message.reply_text(
-            f"📥 Received {batch_count} videos…
-"
+            f"📥 Received {batch_count} videos…\n"
             f"💾 {format_size(video_info.file_size)} | ⏱️ {format_duration(video_info.duration)}"
         )
 
-    # Initialize album
     if "album" not in context.user_data:
         context.user_data["album"] = []
 
     context.user_data["album"].append(video_info)
 
-    # Check if album is full
     album_size = settings.get(ConfigKeys.ALBUM_SIZE, 10)
     if len(context.user_data["album"]) >= album_size:
         await send_album(update, context)
@@ -1148,20 +1034,17 @@ async def handle_video(update: Update, context: ContextTypes.DEFAULT_TYPE):
 @admin_only
 async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handle incoming photos"""
-    # Check if photos are accepted
     if not settings.get(ConfigKeys.ACCEPT_PHOTOS, True):
         await update.message.reply_text("🚫 Photos are currently disabled. Use /toggle_photos to enable.")
         return
 
     message = update.message
-    photo = message.photo[-1]  # Get highest resolution
+    photo = message.photo[-1]
 
-    # Check for duplicates
     if DATABASE_ENABLED and db.photo_exists(photo.file_unique_id):
         await update.message.reply_text("⚠️ Duplicate photo detected.")
         return
 
-    # Add to database
     if DATABASE_ENABLED:
         db.add_photo(
             file_id=photo.file_id,
@@ -1170,9 +1053,7 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
             user_id=update.effective_user.id
         )
 
-    # Check approval mode
     if settings.get(ConfigKeys.PHOTO_APPROVAL_MODE, False):
-        # Store pending approval
         context.user_data["pending_photo"] = {
             "file_id": photo.file_id,
             "file_unique_id": photo.file_unique_id
@@ -1182,22 +1063,18 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
             db.add_pending_approval("photo", photo.file_id, update.effective_chat.id, update.effective_user.id)
 
         await update.message.reply_text(
-            "🖼️ Photo received.
-Use /approve or /reject",
+            "🖼️ Photo received.\nUse /approve or /reject",
             reply_markup=InlineKeyboardMarkup([[
                 InlineKeyboardButton("✅ Approve", callback_data="approve_photo"),
                 InlineKeyboardButton("❌ Reject", callback_data="reject_photo")
             ]])
         )
     else:
-        # Auto-approve
         strip_meta = settings.get(ConfigKeys.STRIP_METADATA, True)
 
         if strip_meta:
-            # Send without caption (stripped)
             await update.message.reply_photo(photo.file_id)
         else:
-            # Send with original caption if present
             caption = message.caption if message.caption else None
             await update.message.reply_photo(photo.file_id, caption=caption)
 
@@ -1208,7 +1085,6 @@ Use /approve or /reject",
 @admin_only
 async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handle incoming documents"""
-    # Check if documents are accepted
     if not settings.get(ConfigKeys.ACCEPT_DOCUMENTS, False):
         await update.message.reply_text("🚫 Documents are currently disabled. Use /toggle_documents to enable.")
         return
@@ -1216,12 +1092,10 @@ async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
     message = update.message
     doc = message.document
 
-    # Check for duplicates
     if DATABASE_ENABLED and db.document_exists(doc.file_unique_id):
         await update.message.reply_text("⚠️ Duplicate document detected.")
         return
 
-    # Add to database
     if DATABASE_ENABLED:
         db.add_document(
             file_id=doc.file_id,
@@ -1233,9 +1107,7 @@ async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
             user_id=update.effective_user.id
         )
 
-    # Check approval mode
     if settings.get(ConfigKeys.DOCUMENT_APPROVAL_MODE, False):
-        # Store pending approval
         context.user_data["pending_document"] = {
             "file_id": doc.file_id,
             "file_unique_id": doc.file_unique_id,
@@ -1246,22 +1118,18 @@ async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
             db.add_pending_approval("document", doc.file_id, update.effective_chat.id, update.effective_user.id)
 
         await update.message.reply_text(
-            f"📄 Document received: {doc.file_name}
-Use /approve or /reject",
+            f"📄 Document received: {doc.file_name}\nUse /approve or /reject",
             reply_markup=InlineKeyboardMarkup([[
                 InlineKeyboardButton("✅ Approve", callback_data="approve_doc"),
                 InlineKeyboardButton("❌ Reject", callback_data="reject_doc")
             ]])
         )
     else:
-        # Auto-approve
         strip_meta = settings.get(ConfigKeys.STRIP_METADATA, True)
 
         if strip_meta:
-            # Send without caption (stripped)
             await update.message.reply_document(document=doc.file_id)
         else:
-            # Send with original caption if present
             caption = message.caption if message.caption else None
             await update.message.reply_document(document=doc.file_id, caption=caption)
 
@@ -1277,11 +1145,9 @@ async def send_album(update: Update, context: ContextTypes.DEFAULT_TYPE, chat_id
     if not album:
         return
 
-    # Random delay
     delay = random.uniform(1.5, 3)
     await asyncio.sleep(delay)
 
-    # Prepare media group
     media_group = []
     strip_meta = settings.get(ConfigKeys.STRIP_METADATA, True)
     auto_caption = settings.get(ConfigKeys.AUTO_CAPTION_MODE, False)
@@ -1291,7 +1157,6 @@ async def send_album(update: Update, context: ContextTypes.DEFAULT_TYPE, chat_id
         caption = None
 
         if not strip_meta:
-            # Only add caption if not stripping metadata
             if auto_caption and caption_template:
                 caption = caption_template.format(
                     index=idx+1,
@@ -1302,14 +1167,12 @@ async def send_album(update: Update, context: ContextTypes.DEFAULT_TYPE, chat_id
             elif auto_caption:
                 caption = f"📹 Video {idx+1}/{len(album)} | ⏱️ {format_duration(video_info.duration)}"
 
-        # Create media (caption will be None if strip_meta is True)
         media = InputMediaVideo(
             media=video_info.file_id,
             caption=caption
         )
         media_group.append(media)
 
-    # Send with retry
     max_retries = 3
     target_chat = chat_id or update.effective_chat.id
 
@@ -1320,7 +1183,6 @@ async def send_album(update: Update, context: ContextTypes.DEFAULT_TYPE, chat_id
             else:
                 await context.bot.send_media_group(target_chat, media_group)
 
-            # Success
             context.user_data["album"] = []
 
             if DATABASE_ENABLED:
@@ -1350,7 +1212,6 @@ async def send_album_to_chat(app, chat_id, album: List[VideoInfo]):
 
     media_group = []
     for video_info in album:
-        # No caption if strip_meta is enabled
         media = InputMediaVideo(
             media=video_info.file_id,
             caption=None if strip_meta else f"📹 {format_duration(video_info.duration)}"
@@ -1450,9 +1311,7 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def show_main_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Show main menu"""
-    text = "🏠 <b>Main Menu</b>
-
-Select an option:"
+    text = "🏠 <b>Main Menu</b>\n\nSelect an option:"
     await update.callback_query.edit_message_text(text, parse_mode="HTML", reply_markup=get_main_keyboard())
 
 
@@ -1462,14 +1321,9 @@ async def show_photo_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
     photo_approval = settings.get(ConfigKeys.PHOTO_APPROVAL_MODE, False)
 
     text = (
-        f"🖼️ <b>Photo Settings</b>
-
-"
-        f"• Accept photos: {'ON ✅' if accept_photos else 'OFF ❌'}
-"
-        f"• Approval mode: {'ON ✅' if photo_approval else 'OFF ❌'}
-
-"
+        f"🖼️ <b>Photo Settings</b>\n\n"
+        f"• Accept photos: {'ON ✅' if accept_photos else 'OFF ❌'}\n"
+        f"• Approval mode: {'ON ✅' if photo_approval else 'OFF ❌'}\n\n"
         f"<i>When approval mode is ON, photos require manual approval before being sent.</i>"
     )
     await update.callback_query.edit_message_text(text, parse_mode="HTML", reply_markup=get_photo_settings_keyboard())
@@ -1481,14 +1335,9 @@ async def show_doc_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
     doc_approval = settings.get(ConfigKeys.DOCUMENT_APPROVAL_MODE, False)
 
     text = (
-        f"📄 <b>Document Settings</b>
-
-"
-        f"• Accept documents: {'ON ✅' if accept_docs else 'OFF ❌'}
-"
-        f"• Approval mode: {'ON ✅' if doc_approval else 'OFF ❌'}
-
-"
+        f"📄 <b>Document Settings</b>\n\n"
+        f"• Accept documents: {'ON ✅' if accept_docs else 'OFF ❌'}\n"
+        f"• Approval mode: {'ON ✅' if doc_approval else 'OFF ❌'}\n\n"
         f"<i>When approval mode is ON, documents require manual approval before being sent.</i>"
     )
     await update.callback_query.edit_message_text(text, parse_mode="HTML", reply_markup=get_document_settings_keyboard())
@@ -1499,18 +1348,11 @@ async def show_admin_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
     admins = admin_manager.get_all_admins()
 
     text = (
-        f"👥 <b>Admin Management</b>
-
-"
-        f"Total admins: {len(admins)}
-
-"
-        f"Use the buttons below or commands:
-"
-        f"/addadmin &lt;id&gt; - Add admin
-"
-        f"/removeadmin &lt;id&gt; - Remove admin
-"
+        f"👥 <b>Admin Management</b>\n\n"
+        f"Total admins: {len(admins)}\n\n"
+        f"Use the buttons below or commands:\n"
+        f"/addadmin &lt;id&gt; - Add admin\n"
+        f"/removeadmin &lt;id&gt; - Remove admin\n"
         f"/listadmins - List all admins"
     )
     await update.callback_query.edit_message_text(text, parse_mode="HTML", reply_markup=get_admin_keyboard())
@@ -1529,11 +1371,7 @@ async def show_timeout_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
     ]
 
     await update.callback_query.edit_message_text(
-        f"⏱️ <b>Batch Timeout</b>
-
-Current: {current} seconds
-
-Select adjustment:",
+        f"⏱️ <b>Batch Timeout</b>\n\nCurrent: {current} seconds\n\nSelect adjustment:",
         parse_mode="HTML",
         reply_markup=InlineKeyboardMarkup(keyboard)
     )
@@ -1552,11 +1390,7 @@ async def show_album_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
     ]
 
     await update.callback_query.edit_message_text(
-        f"📦 <b>Album Size</b>
-
-Current: {current} videos
-
-Select adjustment:",
+        f"📦 <b>Album Size</b>\n\nCurrent: {current} videos\n\nSelect adjustment:",
         parse_mode="HTML",
         reply_markup=InlineKeyboardMarkup(keyboard)
     )
@@ -1570,7 +1404,6 @@ async def batch_watcher(app):
     last_video_time = settings.get(ConfigKeys.LAST_VIDEO_TIME, 0)
     flush_timeout = settings.get(ConfigKeys.FLUSH_TIMEOUT, 60)
 
-    # Check regular albums
     for chat_id, data in list(app.chat_data.items()):
         album = data.get("album", [])
         if album and now - last_video_time >= flush_timeout:
@@ -1599,15 +1432,12 @@ async def error_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def post_init(app):
     """Initialize bot after startup"""
-    # Load settings
     settings._load_settings()
 
-    # Ensure default admins are in database
     if DATABASE_ENABLED:
         for admin_id in DEFAULT_ADMIN_IDS:
             db.add_admin(admin_id, first_name="Default Admin")
 
-    # Set commands
     commands = [
         BotCommand("start", "Show bot status & menu"),
         BotCommand("help", "Show help"),
@@ -1615,11 +1445,9 @@ async def post_init(app):
         BotCommand("ping", "Check latency"),
         BotCommand("settings", "Open settings menu"),
         BotCommand("stats", "View statistics"),
-        # Admin management
         BotCommand("addadmin", "Add new admin"),
         BotCommand("removeadmin", "Remove admin"),
         BotCommand("listadmins", "List all admins"),
-        # Media settings
         BotCommand("toggle_photos", "Toggle accept photos"),
         BotCommand("toggle_documents", "Toggle accept documents"),
         BotCommand("toggle_photo_approval", "Toggle photo approval"),
@@ -1629,19 +1457,16 @@ async def post_init(app):
         BotCommand("set_caption", "Set caption template"),
         BotCommand("set_timeout", "Set batch timeout"),
         BotCommand("set_album_size", "Set album size"),
-        # Media control
         BotCommand("approve", "Approve pending media"),
         BotCommand("reject", "Reject pending media"),
         BotCommand("flush", "Send videos now"),
         BotCommand("clear", "Clear queue"),
-        # Info
         BotCommand("export", "Export stats"),
         BotCommand("dbinfo", "Database info"),
     ]
 
     await app.bot.set_my_commands(commands)
 
-    # Start batch watcher
     app.job_queue.run_repeating(
         lambda ctx: asyncio.create_task(batch_watcher(app)),
         interval=5,
@@ -1658,7 +1483,6 @@ def main():
     if not BOT_TOKEN:
         raise RuntimeError("BOT_TOKEN environment variable is missing!")
 
-    # Database URL for PostgreSQL (optional)
     DATABASE_URL = os.getenv("DATABASE_URL")
     if DATABASE_URL:
         logger.info("PostgreSQL database URL detected")
@@ -1667,7 +1491,6 @@ def main():
 
     app = ApplicationBuilder().token(BOT_TOKEN).build()
 
-    # Command handlers
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("help", help_command))
     app.add_handler(CommandHandler("id", id_command))
@@ -1675,12 +1498,10 @@ def main():
     app.add_handler(CommandHandler("settings", settings_command))
     app.add_handler(CommandHandler("stats", stats_command))
 
-    # Admin management
     app.add_handler(CommandHandler("addadmin", add_admin_command))
     app.add_handler(CommandHandler("removeadmin", remove_admin_command))
     app.add_handler(CommandHandler("listadmins", list_admins_command))
 
-    # Media settings
     app.add_handler(CommandHandler("toggle_photos", toggle_photos_command))
     app.add_handler(CommandHandler("toggle_documents", toggle_documents_command))
     app.add_handler(CommandHandler("toggle_photo_approval", toggle_photo_approval_command))
@@ -1691,28 +1512,22 @@ def main():
     app.add_handler(CommandHandler("set_timeout", set_timeout_command))
     app.add_handler(CommandHandler("set_album_size", set_album_size_command))
 
-    # Media control
     app.add_handler(CommandHandler("approve", approve_command))
     app.add_handler(CommandHandler("reject", reject_command))
     app.add_handler(CommandHandler("flush", flush_command))
     app.add_handler(CommandHandler("clear", clear_command))
 
-    # Info
     app.add_handler(CommandHandler("export", export_command))
     app.add_handler(CommandHandler("dbinfo", db_info_command))
 
-    # Callback handler
     app.add_handler(CallbackQueryHandler(button_callback))
 
-    # Media handlers
     app.add_handler(MessageHandler(filters.VIDEO, handle_video))
     app.add_handler(MessageHandler(filters.PHOTO, handle_photo))
     app.add_handler(MessageHandler(filters.Document.ALL, handle_document))
 
-    # Error handler
     app.add_error_handler(error_handler)
 
-    # Post init
     app.post_init = post_init
 
     logger.info("🚀 Bot is now polling with database support...")
