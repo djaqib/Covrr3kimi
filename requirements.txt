@@ -1,5 +1,5 @@
 # Telegram Bot
-python-telegram-bot==20.7
+python-telegram-bot==21.11
 
 # Database
 psycopg2-binary==2.9.9  # PostgreSQL adapter (optional, falls back to SQLite)
