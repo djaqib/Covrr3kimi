@@ -1031,26 +1031,30 @@ async def send_album_to_chat(app, chat_id, user_id, album: List[Dict[str, Any]])
             return False
 
 
+
 async def send_all_worker(app, chat_id, user_id, source, message_id):
     key = (chat_id, user_id)
     sent = 0
+    skipped = 0
     batch_number = 0
 
     try:
         if source == "library":
             items = db.get_all_saved_videos()
             total = len(items)
-            if total == 0:
+            position = 0
+
+            if not items:
                 await app.bot.edit_message_text(
                     "📚 Your saved library is empty.",
                     chat_id=chat_id,
                     message_id=message_id,
                 )
                 return
-            position = 0
         else:
             items = []
             total = len(db.get_queue(chat_id, user_id))
+
             if total == 0:
                 await app.bot.edit_message_text(
                     "📦 Your queue is empty.",
@@ -1072,6 +1076,9 @@ async def send_all_worker(app, chat_id, user_id, source, message_id):
                 if not batch:
                     break
 
+            successful = []
+            failed = []
+
             try:
                 if len(batch) == 1:
                     await app.bot.send_video(
@@ -1079,62 +1086,115 @@ async def send_all_worker(app, chat_id, user_id, source, message_id):
                         video=batch[0]["file_id"],
                     )
                 else:
-                    media = [
-                        InputMediaVideo(media=item["file_id"])
-                        for item in batch
-                    ]
                     await app.bot.send_media_group(
                         chat_id=chat_id,
-                        media=media,
+                        media=[
+                            InputMediaVideo(media=item["file_id"])
+                            for item in batch
+                        ],
                     )
+
+                successful = list(batch)
+
             except RetryAfter as exc:
                 await asyncio.sleep(float(exc.retry_after) + 1)
-                # Leave this batch untouched and retry it.
                 continue
 
+            except TelegramError as exc:
+                if "media_file_invalid" not in str(exc).lower():
+                    logger.exception(
+                        "Bulk send failed at batch %s after %s videos",
+                        batch_number + 1,
+                        sent,
+                    )
+                    await app.bot.edit_message_text(
+                        f"⚠️ Sending stopped after {sent} videos.\n"
+                        f"Error: {str(exc)[:250]}\n"
+                        "The current batch has not been deliberately skipped. "
+                        "Check the logs before retrying.",
+                        chat_id=chat_id,
+                        message_id=message_id,
+                    )
+                    return
 
-            except (TimedOut, TelegramError) as exc:
-                logger.exception(
-                    "BULK SEND FAILED: source=%s, batch=%s, "
-                    "videos_sent=%s, batch_size=%s",
-                    source,
+                # The album contains at least one invalid media reference.
+                # Test each video separately to isolate the bad reference.
+                logger.warning(
+                    "Invalid media in batch %s. Testing videos individually.",
                     batch_number + 1,
-                    sent,
-                    len(batch),
                 )
 
-                await app.bot.edit_message_text(
-                    f"⚠️ Sending stopped after {sent} videos.\n"
-                    f"Failed batch: {batch_number + 1}\n"
-                    f"Error: {str(exc)[:300]}\n\n"
-                    "The failed batch remains in the queue. "
-                    "Check Render logs before retrying.",
-                    chat_id=chat_id,
-                    message_id=message_id,
-                )
-                return
+                for item in batch:
+                    if key in SEND_ALL_CANCELLED:
+                        break
 
+                    try:
+                        await app.bot.send_video(
+                            chat_id=chat_id,
+                            video=item["file_id"],
+                        )
+                        successful.append(item)
 
-            if source == "queue":
-                ids = [item["file_unique_id"] for item in batch]
-                db.remove_queue_items(chat_id, user_id, ids)
-                for uid in ids:
-                    db.mark_video_sent(uid)
-                total = sent + len(batch) + len(
-                    db.get_queue(chat_id, user_id)
-                )
-            else:
+                    except RetryAfter as retry:
+                        await asyncio.sleep(float(retry.retry_after) + 1)
+                        try:
+                            await app.bot.send_video(
+                                chat_id=chat_id,
+                                video=item["file_id"],
+                            )
+                            successful.append(item)
+                        except TelegramError as item_exc:
+                            failed.append(item)
+                            logger.warning(
+                                "Skipped video %s: %s",
+                                item.get("file_unique_id"),
+                                item_exc,
+                            )
+
+                    except TelegramError as item_exc:
+                        failed.append(item)
+                        logger.warning(
+                            "Skipped video %s: %s",
+                            item.get("file_unique_id"),
+                            item_exc,
+                        )
+
+            # Advance past this batch in the shared library, even when
+            # individual videos are invalid. Keep library records intact.
+            if source == "library":
                 position += len(batch)
 
-            sent += len(batch)
+            # Remove processed items from the queue so an invalid reference
+            # cannot block every subsequent batch. Keep failed videos saved
+            # in the shared library for later inspection or deletion.
+            if source == "queue":
+                processed_ids = [
+                    item["file_unique_id"] for item in batch
+                ]
+                db.remove_queue_items(chat_id, user_id, processed_ids)
+
+            for item in successful:
+                db.mark_video_sent(item["file_unique_id"])
+
+            if len(successful) > 1:
+                db.increment_stat("total_batches")
+
+            sent += len(successful)
+            skipped += len(failed)
             batch_number += 1
+
+            progress = (
+                position if source == "library"
+                else sent + skipped
+            )
 
             await app.bot.edit_message_text(
                 f"📤 Sending videos...\n\n"
                 f"Source: {'Shared library' if source == 'library' else 'Queue'}\n"
                 f"Videos sent: {sent}\n"
-                f"Batches sent: {batch_number}\n"
-                f"Progress: {min(sent, total)}/{total}",
+                f"Videos skipped: {skipped}\n"
+                f"Batches processed: {batch_number}\n"
+                f"Progress: {min(progress, total)}/{total}",
                 chat_id=chat_id,
                 message_id=message_id,
                 reply_markup=InlineKeyboardMarkup([[
@@ -1154,9 +1214,16 @@ async def send_all_worker(app, chat_id, user_id, source, message_id):
                 await asyncio.sleep(6)
 
         if key in SEND_ALL_CANCELLED:
-            result = f"⏹ Stopped. Sent {sent} video(s)."
+            result = (
+                f"⏹ Stopped.\nVideos sent: {sent}\n"
+                f"Videos skipped: {skipped}"
+            )
         else:
-            result = f"✅ Finished! Sent {sent} video(s)."
+            result = (
+                f"✅ Retrieval finished!\n"
+                f"Videos sent: {sent}\n"
+                f"Videos skipped: {skipped}"
+            )
 
         await app.bot.edit_message_text(
             result,
@@ -1169,16 +1236,19 @@ async def send_all_worker(app, chat_id, user_id, source, message_id):
         logger.exception("Bulk video send failed")
         try:
             await app.bot.edit_message_text(
-                f"⚠️ Bulk send encountered an error after {sent} videos. "
+                f"⚠️ Bulk send encountered an error.\n"
+                f"Videos sent: {sent}\nVideos skipped: {skipped}\n"
                 "Check the hosting logs before retrying.",
                 chat_id=chat_id,
                 message_id=message_id,
             )
         except Exception:
             pass
+
     finally:
         SEND_ALL_ACTIVE.discard(key)
         SEND_ALL_CANCELLED.discard(key)
+
 
 async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
