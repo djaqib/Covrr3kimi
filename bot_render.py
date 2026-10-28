@@ -246,11 +246,8 @@ def get_main_keyboard():
         [InlineKeyboardButton("📦 Queue", callback_data="queue_status"), InlineKeyboardButton("🚀 Send now", callback_data="flush")],
         [InlineKeyboardButton("🔎 Search files", callback_data="search_help"), InlineKeyboardButton("⭐ Favorites", callback_data="favorites")],
         [InlineKeyboardButton("🩺 Health", callback_data="health"), InlineKeyboardButton("🖼️ Photos", callback_data="photo_menu")],
-        [InlineKeyboardButton("📄 Docs", callback_data="doc_menu"), 
-        [InlineKeyboardButton(
-            "⚠️ Skipped Videos", callback_data="skipped_menu"
-        )],         
-InlineKeyboardButton("❓ Help", callback_data="help")]
+        [InlineKeyboardButton("📄 Docs", callback_data="doc_menu"), InlineKeyboardButton("⚠️ Skipped", callback_data="skipped_menu")],
+        [InlineKeyboardButton("❓ Help", callback_data="help")]
     ])
 
 def get_queue_keyboard():
@@ -259,11 +256,8 @@ def get_queue_keyboard():
         [InlineKeyboardButton("🚀 Send now", callback_data="flush"), InlineKeyboardButton("🔄 Refresh", callback_data="queue_status")],
         [InlineKeyboardButton("▶️ Resume auto-send" if paused else "⏸ Pause auto-send", callback_data="toggle_pause")],
         [InlineKeyboardButton("📤 Send All Videos", callback_data="send_all_menu")],
-        [InlineKeyboardButton(
-            "⚠️ Skipped Videos",
-         callback_data="skipped_menu"
-        )],            
-      [InlineKeyboardButton("🗑 Clear queue", callback_data="clear_queue_confirm"), InlineKeyboardButton("🏠 Menu", callback_data="back_to_main")]
+        [InlineKeyboardButton("⚠️ Skipped Videos", callback_data="skipped_menu")],
+        [InlineKeyboardButton("🗑 Clear queue", callback_data="clear_queue_confirm"), InlineKeyboardButton("🏠 Menu", callback_data="back_to_main")]
     ])
 
 def get_stats_keyboard():
@@ -650,7 +644,6 @@ async def queue_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     else:
         await update.effective_message.reply_text(text, parse_mode="HTML", reply_markup=get_queue_keyboard())
 
-
 @admin_only
 async def search_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = " ".join(context.args).strip()
@@ -693,7 +686,6 @@ async def search_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"• ID: <code>{item['unique_id']}</code>"
         )
 
-        
         buttons = [
             InlineKeyboardButton(
                 "▶️ Open / Send",
@@ -714,7 +706,6 @@ async def search_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
 
         kb = InlineKeyboardMarkup([buttons])
-
 
         await update.effective_message.reply_text(
             text,
@@ -857,8 +848,6 @@ async def handle_video(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     checksum = generate_checksum(video.file_size or 0, video.duration or 0, video.width or 0, video.height or 0)
 
-    # Telegram's file_unique_id is the reliable duplicate key. Metadata fingerprints
-    # are deliberately not used to reject files because unrelated videos can share metadata.
     if DATABASE_ENABLED and db.video_exists(file_unique_id=video.file_unique_id):
         db.increment_stat("duplicate_videos")
         await message.reply_text("⚠️ Exact duplicate video skipped.")
@@ -888,7 +877,6 @@ async def handle_video(update: Update, context: ContextTypes.DEFAULT_TYPE):
         count = len(db.get_queue(update.effective_chat.id, update.effective_user.id)) if DATABASE_ENABLED else len(context.user_data.get("album", []))
         if count >= max(2, min(10, int(settings.get(ConfigKeys.ALBUM_SIZE, 10)))):
             await send_album(update, context)
-    # Avoid spamming the chat for every clip. Queue status is available by button or /queue.
     if progress_count and progress_count % 50 == 0:
         state = "paused" if settings.get(ConfigKeys.PAUSE_AUTO_FLUSH, False) else "active"
         await context.bot.send_message(chat_id=update.effective_chat.id, text=f"📥 Progress: {progress_count} videos saved. Auto-send is {state}.")
@@ -989,11 +977,8 @@ async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if DATABASE_ENABLED:
             db.increment_stat("total_documents")
 
-
 async def send_album_to_chat(app, chat_id, user_id, album: List[Dict[str, Any]]):
     async with QUEUE_SEND_LOCK:
-        # Re-read the queue after acquiring the lock.
-        # Never send a stale batch fetched by another watcher.
         if DATABASE_ENABLED:
             current_queue = db.get_queue(chat_id, user_id)
             items = current_queue[:10]
@@ -1037,8 +1022,6 @@ async def send_album_to_chat(app, chat_id, user_id, album: List[Dict[str, Any]])
                 "Auto-send failed; queue retained for retry: %s", exc
             )
             return False
-
-
 
 async def send_all_worker(app, chat_id, user_id, source, message_id):
     key = (chat_id, user_id)
@@ -1151,39 +1134,23 @@ async def send_all_worker(app, chat_id, user_id, source, message_id):
                                 video=item["file_id"],
                             )
                             successful.append(item)
-                        
                         except TelegramError as item_exc:
                             failed.append(item)
-                            db.add_skipped_video(
-                       
-                                item,
-                                str(item_exc),
-                                source,
-                            )
+                            db.add_skipped_video(item, str(item_exc), source)
                             logger.warning(
                                 "Skipped video %s: %s",
                                 item.get("file_unique_id"),
                                 item_exc,
                             )
 
-                            db.add_skipped_video(
-                                item,
-                                str(item_exc),
-                                source,
-                            )                   
-                        except TelegramError as item_exc:
-                            failed.append(item)
-                            db.add_skipped_video(
-                            item,
-                            str(item_exc),
-                            source,
-                        )
+                    except TelegramError as item_exc:
+                        failed.append(item)
+                        db.add_skipped_video(item, str(item_exc), source)
                         logger.warning(
                             "Skipped video %s: %s",
                             item.get("file_unique_id"),
                             item_exc,
                         )
-
 
             # Advance past this batch in the shared library, even when
             # individual videos are invalid. Keep library records intact.
@@ -1274,7 +1241,6 @@ async def send_all_worker(app, chat_id, user_id, source, message_id):
     finally:
         SEND_ALL_ACTIVE.discard(key)
         SEND_ALL_CANCELLED.discard(key)
-
 
 async def show_skipped_menu(query, offset=0):
     if not DATABASE_ENABLED:
@@ -1377,6 +1343,7 @@ async def show_skipped_menu(query, offset=0):
         await query.edit_message_text(
             "⚠️ Could not load skipped videos. Check the hosting logs."
         )
+
 async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     data = query.data
@@ -1470,7 +1437,8 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     f"❌ Still unable to send: {str(exc)[:150]}",
                     show_alert=True,
                 )
-    if data == "send_all_menu":
+
+    elif data == "send_all_menu":
         kb = InlineKeyboardMarkup([
             [InlineKeyboardButton(
                 "📚 All saved library videos",
@@ -1567,11 +1535,11 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
 
         deleted = db.delete_saved_video(unique_id)
+        db.remove_skipped_video(unique_id)
         if deleted:
             await query.edit_message_text(
                 "🗑 Video deleted from the shared library, favorites,"
-                "and queues.",
-                db.remove_skipped_video(unique_id)
+                "and queues."
             )
         else:
             await query.edit_message_text(
@@ -1583,7 +1551,7 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "Deletion cancelled. The video remains in your library."
         )
 
-    if data == "stats":
+    elif data == "stats":
         await stats_command(update, context)
     elif data == "queue_status":
         await queue_command(update, context)
@@ -1752,7 +1720,6 @@ async def batch_watcher(app):
 async def error_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     logger.error(f"Error: {context.error}")
 
-
 async def post_init(app):
     settings._load_settings()
 
@@ -1781,7 +1748,6 @@ async def post_init(app):
     )
 
     logger.info("✅ Bot initialized")
-
 
 def main():
     BOT_TOKEN = os.getenv("BOT_TOKEN")
@@ -1833,8 +1799,6 @@ def main():
         full_url = f"{WEBHOOK_URL}{webhook_path}"
         logger.info(f"Webhook: {full_url}")
         
-        # app.run_webhook starts the Tornado server on PORT (10000) 
-        # and satisfies Render's port requirement automatically!
         app.run_webhook(
             listen="0.0.0.0",
             port=PORT,
@@ -1845,7 +1809,6 @@ def main():
     else:
         logger.info("Running in polling mode...")
         app.run_polling(allowed_updates=Update.ALL_TYPES)
-
 
 if __name__ == "__main__":
     main()
