@@ -1245,7 +1245,7 @@ def search_saved_files(self, user_id: int, query: str, limit: int = 10) -> List[
     def cleanup_old_records(self, days: int = 30):
         """Clean up old sent/processed records"""
         with self.get_connection() as conn:
-            cursor = conn.cursor()
+                cursor = conn.cursor()
             if self.use_postgres:
                 cursor.execute("""
                     DELETE FROM videos WHERE status = 'sent' AND sent_at < CURRENT_TIMESTAMP - INTERVAL '%s days'
@@ -1260,7 +1260,7 @@ def search_saved_files(self, user_id: int, query: str, limit: int = 10) -> List[
                 cursor.execute("""
                     DELETE FROM pending_approvals WHERE status != 'pending' AND created_at < datetime('now', '-{} days')
                 """.format(days))
-            cursor.close()
+                cursor.close()
 
     def close(self):
         """Close database connections"""
