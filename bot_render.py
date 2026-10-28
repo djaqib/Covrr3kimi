@@ -1092,15 +1092,28 @@ async def send_all_worker(app, chat_id, user_id, source, message_id):
                 # Leave this batch untouched and retry it.
                 continue
 
+
             except (TimedOut, TelegramError) as exc:
-                logger.error("Bulk send failed: %s", exc)
+                logger.exception(
+                    "BULK SEND FAILED: source=%s, batch=%s, "
+                    "videos_sent=%s, batch_size=%s",
+                    source,
+                    batch_number + 1,
+                    sent,
+                    len(batch),
+                )
+
                 await app.bot.edit_message_text(
-                    f"⚠️ Sending stopped after {sent} videos. "
-                    "The failed batch was not removed from the queue.",
+                    f"⚠️ Sending stopped after {sent} videos.\n"
+                    f"Failed batch: {batch_number + 1}\n"
+                    f"Error: {str(exc)[:300]}\n\n"
+                    "The failed batch remains in the queue. "
+                    "Check Render logs before retrying.",
                     chat_id=chat_id,
                     message_id=message_id,
                 )
                 return
+
 
             if source == "queue":
                 ids = [item["file_unique_id"] for item in batch]
