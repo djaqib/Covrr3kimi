@@ -47,6 +47,10 @@ logging.basicConfig(
     ]
 )
 logger = logging.getLogger(__name__)
+
+SEND_ALL_ACTIVE = set()
+SEND_ALL_CANCELLED = set()
+
 QUEUE_SEND_LOCK = asyncio.Lock()
 
 PORT = int(os.environ.get("PORT", 10000))
@@ -250,6 +254,7 @@ def get_queue_keyboard():
     return InlineKeyboardMarkup([
         [InlineKeyboardButton("🚀 Send now", callback_data="flush"), InlineKeyboardButton("🔄 Refresh", callback_data="queue_status")],
         [InlineKeyboardButton("▶️ Resume auto-send" if paused else "⏸ Pause auto-send", callback_data="toggle_pause")],
+        [InlineKeyboardButton("📤 Send All Videos", callback_data="send_all_menu")],
         [InlineKeyboardButton("🗑 Clear queue", callback_data="clear_queue_confirm"), InlineKeyboardButton("🏠 Menu", callback_data="back_to_main")]
     ])
 
