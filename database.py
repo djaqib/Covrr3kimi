@@ -102,7 +102,7 @@ class Database:
     def _cursor(self, conn):
         """Helper to get a dictionary-returning cursor for both PostgreSQL and SQLite"""
         if self.use_postgres:
-            return conn.cursor(cursor_factory=RealDictCursr)
+            return conn.cursor(cursor_factory=RealDictCursor)
         else:
             return conn.cursor()
 
