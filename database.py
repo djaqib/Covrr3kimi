@@ -841,32 +841,133 @@ class Database:
             rows = cur.fetchall(); cur.close()
             return [{"chat_id": r[0], "user_id": r[1]} for r in rows]
 
+
     def search_saved_files(self, user_id: int, query: str, limit: int = 10) -> List[Dict[str, Any]]:
-        """Search saved videos, photos, and documents owned by this user."""
+        """Search the shared library of saved videos, photos, and documents."""
         q = f"%{query.strip()}%"
         out: List[Dict[str, Any]] = []
+
         with self.get_connection() as conn:
             cur = conn.cursor()
+
+            # Search all saved videos, regardless of which account added them.
             if self.use_postgres:
-                cur.execute("SELECT file_id,file_unique_id,file_size,duration,width,height,created_at,status FROM videos WHERE user_id=%s AND (file_unique_id ILIKE %s OR file_id ILIKE %s OR CAST(file_size AS TEXT) ILIKE %s OR CAST(duration AS TEXT) ILIKE %s) ORDER BY created_at DESC LIMIT %s", (user_id,q,q,q,q,limit))
+                cur.execute("""
+                    SELECT file_id, file_unique_id, file_size, duration,
+                           width, height, created_at, status
+                    FROM videos
+                    WHERE file_unique_id ILIKE %s
+                       OR file_id ILIKE %s
+                       OR CAST(file_size AS TEXT) ILIKE %s
+                       OR CAST(duration AS TEXT) ILIKE %s
+                    ORDER BY created_at DESC
+                    LIMIT %s
+                """, (q, q, q, q, limit))
             else:
-                cur.execute("SELECT file_id,file_unique_id,file_size,duration,width,height,created_at,status FROM videos WHERE user_id=? AND (file_unique_id LIKE ? OR file_id LIKE ? OR CAST(file_size AS TEXT) LIKE ? OR CAST(duration AS TEXT) LIKE ?) ORDER BY created_at DESC LIMIT ?", (user_id,q,q,q,q,limit))
+                cur.execute("""
+                    SELECT file_id, file_unique_id, file_size, duration,
+                           width, height, created_at, status
+                    FROM videos
+                    WHERE file_unique_id LIKE ?
+                       OR file_id LIKE ?
+                       OR CAST(file_size AS TEXT) LIKE ?
+                       OR CAST(duration AS TEXT) LIKE ?
+                    ORDER BY created_at DESC
+                    LIMIT ?
+                """, (q, q, q, q, limit))
+
             for r in cur.fetchall():
-                out.append({"type":"video","file_id":r[0],"unique_id":r[1],"file_size":r[2] or 0,"duration":r[3] or 0,"width":r[4] or 0,"height":r[5] or 0,"label":"Video","created_at":r[6],"status":r[7]})
+                out.append({
+                    "type": "video",
+                    "file_id": r[0],
+                    "unique_id": r[1],
+                    "file_size": r[2] or 0,
+                    "duration": r[3] or 0,
+                    "width": r[4] or 0,
+                    "height": r[5] or 0,
+                    "label": "Video",
+                    "created_at": r[6],
+                    "status": r[7],
+                })
+
+            # Search all saved photos.
             if self.use_postgres:
-                cur.execute("SELECT file_id,file_unique_id,created_at,status FROM photos WHERE user_id=%s AND (file_unique_id ILIKE %s OR file_id ILIKE %s) ORDER BY created_at DESC LIMIT %s", (user_id,q,q,limit))
+                cur.execute("""
+                    SELECT file_id, file_unique_id, created_at, status
+                    FROM photos
+                    WHERE file_unique_id ILIKE %s OR file_id ILIKE %s
+                    ORDER BY created_at DESC
+                    LIMIT %s
+                """, (q, q, limit))
             else:
-                cur.execute("SELECT file_id,file_unique_id,created_at,status FROM photos WHERE user_id=? AND (file_unique_id LIKE ? OR file_id LIKE ?) ORDER BY created_at DESC LIMIT ?", (user_id,q,q,limit))
+                cur.execute("""
+                    SELECT file_id, file_unique_id, created_at, status
+                    FROM photos
+                    WHERE file_unique_id LIKE ? OR file_id LIKE ?
+                    ORDER BY created_at DESC
+                    LIMIT ?
+                """, (q, q, limit))
+
             for r in cur.fetchall():
-                out.append({"type":"photo","file_id":r[0],"unique_id":r[1],"file_size":0,"duration":0,"width":0,"height":0,"label":"Photo","created_at":r[2],"status":r[3]})
+                out.append({
+                    "type": "photo",
+                    "file_id": r[0],
+                    "unique_id": r[1],
+                    "file_size": 0,
+                    "duration": 0,
+                    "width": 0,
+                    "height": 0,
+                    "label": "Photo",
+                    "created_at": r[2],
+                    "status": r[3],
+                })
+
+            # Search all saved documents.
             if self.use_postgres:
-                cur.execute("SELECT file_id,file_unique_id,file_name,file_size,created_at,status FROM documents WHERE user_id=%s AND (COALESCE(file_name,'') ILIKE %s OR file_unique_id ILIKE %s OR file_id ILIKE %s OR CAST(file_size AS TEXT) ILIKE %s) ORDER BY created_at DESC LIMIT %s", (user_id,q,q,q,q,limit))
+                cur.execute("""
+                    SELECT file_id, file_unique_id, file_name,
+                           file_size, created_at, status
+                    FROM documents
+                    WHERE COALESCE(file_name, '') ILIKE %s
+                       OR file_unique_id ILIKE %s
+                       OR file_id ILIKE %s
+                       OR CAST(file_size AS TEXT) ILIKE %s
+                    ORDER BY created_at DESC
+                    LIMIT %s
+                """, (q, q, q, q, limit))
             else:
-                cur.execute("SELECT file_id,file_unique_id,file_name,file_size,created_at,status FROM documents WHERE user_id=? AND (COALESCE(file_name,'') LIKE ? OR file_unique_id LIKE ? OR file_id LIKE ? OR CAST(file_size AS TEXT) LIKE ?) ORDER BY created_at DESC LIMIT ?", (user_id,q,q,q,q,limit))
+                cur.execute("""
+                    SELECT file_id, file_unique_id, file_name,
+                           file_size, created_at, status
+                    FROM documents
+                    WHERE COALESCE(file_name, '') LIKE ?
+                       OR file_unique_id LIKE ?
+                       OR file_id LIKE ?
+                       OR CAST(file_size AS TEXT) LIKE ?
+                    ORDER BY created_at DESC
+                    LIMIT ?
+                """, (q, q, q, q, limit))
+
             for r in cur.fetchall():
-                out.append({"type":"document","file_id":r[0],"unique_id":r[1],"file_size":r[3] or 0,"duration":0,"width":0,"height":0,"label":r[2] or "Document","created_at":r[4],"status":r[5]})
+                out.append({
+                    "type": "document",
+                    "file_id": r[0],
+                    "unique_id": r[1],
+                    "file_size": r[3] or 0,
+                    "duration": 0,
+                    "width": 0,
+                    "height": 0,
+                    "label": r[2] or "Document",
+                    "created_at": r[4],
+                    "status": r[5],
+                })
+
             cur.close()
-        out.sort(key=lambda x: str(x.get("created_at") or ""), reverse=True)
+
+        out.sort(
+            key=lambda x: str(x.get("created_at") or ""),
+            reverse=True,
+        )
         return out[:limit]
 
     def get_media_by_unique_id(self, media_type: str, file_unique_id: str) -> Optional[Dict[str, Any]]:
