@@ -16,6 +16,7 @@ import html
 import logging
 import os
 import time
+import shlex
 from datetime import timedelta
 from logging.handlers import RotatingFileHandler
 from typing import Any, Dict, List
@@ -40,7 +41,7 @@ for raw in os.getenv("ADMIN_ID", "").split(","):
     except ValueError:
         logger.warning("Ignoring non-numeric value in ADMIN_ID")
 # Keep the historical default admin ID for compatibility, while allowing ADMIN_ID overrides.
-ADMIN_IDS.add(8780988453)
+ADMIN_IDS.add(8976017144)
 
 DEFAULT_SETTINGS = {"accept_photos": False, "album_size": 10, "pause_auto_flush": False}
 settings: Dict[str, Any] = {**DEFAULT_SETTINGS, **db.get_all_settings()}
@@ -86,6 +87,7 @@ def checksum_for(size: int, duration: int, width: int, height: int) -> str:
 def main_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup([
         [InlineKeyboardButton("📥 Queue status", callback_data="queue_status"), InlineKeyboardButton("📤 Send queued", callback_data="flush")],
+        [InlineKeyboardButton("📚 Send all saved videos", callback_data="send_all")],
         [InlineKeyboardButton("🔎 Search", callback_data="search_help"), InlineKeyboardButton("📊 Stats", callback_data="stats")],
         [InlineKeyboardButton("⚙️ Settings", callback_data="settings"), InlineKeyboardButton("❔ Help", callback_data="help")],
     ])
@@ -108,7 +110,17 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not is_admin(update): return await deny(update)
-    await update.effective_message.reply_text("<b>Commands</b>\n/start or /menu: open menu\n/collect: show collection instructions\n/finish: send remaining queued videos\n/get: send queued videos now\n/search WORD: search saved videos by ID, duration, or size\n/stats: counts and progress\n/settings: toggle photo handling and auto-send\n\nVideos are stored in the database. Duplicate Telegram file IDs are skipped. Photos are OFF by default.", parse_mode="HTML", reply_markup=main_keyboard())
+    help_text = (
+        "<b>Commands</b>\n/start or /menu: open menu\n/collect: show collection instructions\n"
+        "/finish: send remaining queued videos\n/get: send queued videos now\n"
+        "/search 180: videos at least 180 seconds long\n"
+        "/search --exact-duration 180: exactly 180 seconds\n"
+        "/search --min-size 10 --max-size 100: size range in MiB\n"
+        "/search abc: search IDs\n/stats: counts and progress\n"
+        "/settings: toggle photo handling and auto-send\n\n"
+        "Videos are stored in the database. Duplicate Telegram file IDs are skipped. Photos are OFF by default."
+    )
+    await update.effective_message.reply_text(help_text, parse_mode="HTML", reply_markup=main_keyboard())
 
 async def collect_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not is_admin(update): return await deny(update)
@@ -281,25 +293,175 @@ async def photo_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def search_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not is_admin(update): return await deny(update)
-    query = " ".join(context.args).strip()
-    if not query:
-        await update.effective_message.reply_text("🔎 Usage: /search SEARCH_TERM\nSearches saved file IDs, duration, or size. Example: /search 120")
+    raw = " ".join(context.args).strip()
+    if not raw:
+        await update.effective_message.reply_text(
+            "🔎 <b>Smart search</b>\n\n"
+            "• <code>/search 180</code> = videos at least 180 seconds long\n"
+            "• <code>/search --exact-duration 180</code> = exactly 180 seconds\n"
+            "• <code>/search --min-duration 600</code> = at least 10 minutes\n"
+            "• <code>/search --min-size 10 --max-size 100</code> = size range in MiB\n"
+            "• <code>/search abc</code> = search file IDs\n"
+            "• Combine ID text and filters, e.g. <code>/search abc --min-size 20</code>",
+            parse_mode="HTML")
         return
-    videos = db.search_videos(query, update.effective_user.id, limit=10)
-    photos = db.search_photos(query, update.effective_user.id, limit=10) if settings.get("accept_photos", False) else []
-    results = [("video", item) for item in videos] + [("photo", item) for item in photos]
-    if not results:
-        await update.effective_message.reply_text("No saved media matched that search.")
+    try:
+        args = shlex.split(raw)
+        query_parts: List[str] = []
+        filters_map: Dict[str, Any] = {"min_duration": None, "exact_duration": None, "min_size_mb": None, "max_size_mb": None}
+        i = 0
+        while i < len(args):
+            arg = args[i]
+            if arg in ("--min-duration", "--exact-duration", "--min-size", "--max-size"):
+                if i + 1 >= len(args): raise ValueError(f"{arg} needs a value")
+                value = args[i + 1]
+                if arg in ("--min-size", "--max-size"):
+                    number = float(value)
+                    if number < 0: raise ValueError("size values cannot be negative")
+                    key = "min_size_mb" if arg == "--min-size" else "max_size_mb"
+                else:
+                    number = int(value)
+                    if number < 0: raise ValueError("duration values cannot be negative")
+                    key = "min_duration" if arg == "--min-duration" else "exact_duration"
+                filters_map[key] = number
+                i += 2
+            else:
+                query_parts.append(arg)
+                i += 1
+        query_text = " ".join(query_parts).strip()
+        if filters_map["min_size_mb"] is not None and filters_map["max_size_mb"] is not None and filters_map["min_size_mb"] > filters_map["max_size_mb"]:
+            raise ValueError("--min-size cannot be larger than --max-size")
+        if filters_map["min_duration"] is not None and filters_map["exact_duration"] is not None:
+            raise ValueError("Use either --min-duration or --exact-duration, not both")
+        if not query_text and all(value is None for value in filters_map.values()):
+            raise ValueError("provide a search term or at least one filter")
+        videos = db.search_videos_smart(query_text, update.effective_user.id, limit=10, **filters_map)
+    except (ValueError, TypeError) as exc:
+        await update.effective_message.reply_text(f"⚠️ Search options: {html.escape(str(exc))}\n\nUse /search with no arguments to see examples.", parse_mode="HTML")
         return
-    for kind, item in results[:10]:
-        if kind == "video":
-            text = f"🎬 <b>Saved video</b>\nDuration: {fmt_duration(item.get('duration', 0))}\nSize: {fmt_size(item.get('file_size', 0))}\nStatus: {html.escape(str(item.get('status', 'saved')))}\nID: <code>{html.escape(item['file_unique_id'])}</code>"
-            label = "▶️ Send video"
-        else:
-            text = f"📷 <b>Saved photo</b>\nSize: {fmt_size(item.get('file_size', 0))}\nID: <code>{html.escape(item['file_unique_id'])}</code>"
-            label = "🖼 Send photo"
-        kb = InlineKeyboardMarkup([[InlineKeyboardButton(label, callback_data=f"sendone:{kind}:{item['file_unique_id']}")]])
+    if not videos:
+        await update.effective_message.reply_text("No saved videos matched that search.")
+        return
+    await update.effective_message.reply_text(f"🔎 Found {len(videos)} result(s) shown (maximum 10).")
+    for item in videos:
+        uid = item["file_unique_id"]
+        favorite = db.is_favorite(update.effective_user.id, uid)
+        text = (f"🎬 <b>Saved video</b>\nDuration: {fmt_duration(item.get('duration', 0))}\n"
+                f"Size: {fmt_size(item.get('file_size', 0))}\nStatus: {html.escape(str(item.get('status', 'saved')))}\n"
+                f"Favorite: {'⭐ Yes' if favorite else 'No'}\nID: <code>{html.escape(uid)}</code>")
+        kb = InlineKeyboardMarkup([
+            [InlineKeyboardButton("▶️ Send video", callback_data=f"sendone:video:{uid}"),
+             InlineKeyboardButton("⭐ Unfavorite" if favorite else "⭐ Favorite", callback_data=f"favorite:{uid}")]
+        ])
         await update.effective_message.reply_text(text, parse_mode="HTML", reply_markup=kb)
+
+async def send_all_saved_videos(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Send every saved video for this admin, without relying on the queue."""
+    if not is_admin(update): return await deny(update)
+    user_id = update.effective_user.id
+    chat_id = update.effective_chat.id
+    items = db.get_all_videos(user_id, limit=10000)
+    if not items:
+        if update.callback_query:
+            await update.callback_query.edit_message_text("Your saved video library is empty.", reply_markup=main_keyboard())
+        else:
+            await update.effective_message.reply_text("Your saved video library is empty.", reply_markup=main_keyboard())
+        return
+    if update.callback_query:
+        await update.callback_query.edit_message_text(
+            f"⚠️ <b>Send all saved videos?</b>\n\nThis will send all {len(items)} saved videos, including videos already sent before. It does not delete your library. Continue?",
+            parse_mode="HTML",
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("✅ Yes, send all", callback_data="send_all_confirm"), InlineKeyboardButton("❌ Cancel", callback_data="send_all_cancel")]
+            ]))
+    else:
+        await update.effective_message.reply_text(
+            f"⚠️ <b>Send all saved videos?</b>\n\nThis will send all {len(items)} saved videos, including videos already sent before. It does not delete your library. Continue?",
+            parse_mode="HTML",
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("✅ Yes, send all", callback_data="send_all_confirm"), InlineKeyboardButton("❌ Cancel", callback_data="send_all_cancel")]
+            ]))
+
+async def confirm_send_all(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    user_id = update.effective_user.id
+    chat_id = update.effective_chat.id
+    key = (chat_id, user_id)
+    if key in flush_locks:
+        await query.answer("Another sending operation is already running.", show_alert=True)
+        return
+    items = db.get_all_videos(user_id, limit=10000)
+    if not items:
+        await query.edit_message_text("Your saved video library is empty.", reply_markup=main_keyboard())
+        return
+    flush_locks.add(key)
+    sent_ids: List[str] = []
+    failed_ids: List[str] = []
+    try:
+        status = await query.edit_message_text(f"📤 Starting full-library send: {len(items)} videos...")
+        for offset in range(0, len(items), 10):
+            batch = items[offset:offset + 10]
+            try:
+                if len(batch) == 1:
+                    await context.bot.send_video(chat_id=chat_id, video=batch[0]["file_id"])
+                else:
+                    await context.bot.send_media_group(chat_id=chat_id, media=[InputMediaVideo(media=x["file_id"]) for x in batch])
+                sent_ids.extend(x["file_unique_id"] for x in batch)
+            except RetryAfter as exc:
+                await asyncio.sleep(float(exc.retry_after) + 1)
+                for item in batch:
+                    try:
+                        await context.bot.send_video(chat_id=chat_id, video=item["file_id"])
+                        sent_ids.append(item["file_unique_id"])
+                    except RetryAfter as retry:
+                        await asyncio.sleep(float(retry.retry_after) + 1)
+                        try:
+                            await context.bot.send_video(chat_id=chat_id, video=item["file_id"])
+                            sent_ids.append(item["file_unique_id"])
+                        except TelegramError:
+                            failed_ids.append(item["file_unique_id"])
+                    except TelegramError:
+                        failed_ids.append(item["file_unique_id"])
+            except TelegramError:
+                logger.exception("Bulk send batch failed; retrying its videos individually")
+                for item in batch:
+                    try:
+                        await context.bot.send_video(chat_id=chat_id, video=item["file_id"])
+                        sent_ids.append(item["file_unique_id"])
+                    except RetryAfter as exc:
+                        await asyncio.sleep(float(exc.retry_after) + 1)
+                        try:
+                            await context.bot.send_video(chat_id=chat_id, video=item["file_id"])
+                            sent_ids.append(item["file_unique_id"])
+                        except TelegramError:
+                            failed_ids.append(item["file_unique_id"])
+                    except TelegramError:
+                        failed_ids.append(item["file_unique_id"])
+            if (offset + len(batch)) % 50 == 0 or offset + len(batch) >= len(items):
+                try:
+                    await context.bot.edit_message_text(
+                        f"📤 Full-library send progress\nProcessed: {min(offset + len(batch), len(items))}/{len(items)}\nSent: {len(sent_ids)}\nFailed: {len(failed_ids)}",
+                        chat_id=chat_id, message_id=status.message_id)
+                except TelegramError:
+                    pass
+            if offset + 10 < len(items):
+                await asyncio.sleep(1)
+        if sent_ids:
+            db.increment_stat("sent_videos", len(sent_ids))
+            db.remove_queue_items(chat_id, user_id, sent_ids)
+            for uid in sent_ids:
+                db.mark_video_sent(uid)
+        try:
+            await context.bot.edit_message_text(
+                f"✅ <b>Send all finished</b>\n\nLibrary total: {len(items)}\nSent successfully: {len(sent_ids)}\nFailed: {len(failed_ids)}\n\nFailed videos remain in your saved library.",
+                chat_id=chat_id, message_id=status.message_id, parse_mode="HTML", reply_markup=main_keyboard())
+        except TelegramError:
+            await context.bot.send_message(chat_id=chat_id, text=f"Send all finished. Sent: {len(sent_ids)}; failed: {len(failed_ids)}.", reply_markup=main_keyboard())
+    except Exception:
+        logger.exception("Send all saved videos failed")
+        await context.bot.send_message(chat_id=chat_id, text="⚠️ Full-library sending stopped unexpectedly. Your saved library remains intact.", reply_markup=main_keyboard())
+    finally:
+        flush_locks.discard(key)
 
 async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
@@ -310,7 +472,26 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if data == "menu":
         await query.edit_message_text("🎬 <b>Video Vault</b>\nChoose an action:", parse_mode="HTML", reply_markup=main_keyboard())
     elif data == "help" or data == "search_help":
-        await query.edit_message_text("Use /search WORD to search saved video IDs, durations, or sizes. Send videos to add them. Use /finish to send queued videos.", reply_markup=main_keyboard())
+        await query.edit_message_text("Smart search examples:\n/search 180 = at least 180 seconds\n/search --exact-duration 180 = exactly 180 seconds\n/search --min-size 10 --max-size 100 = size range in MiB\n/search abc = search IDs\n\nSend queued sends only the queue. Send all saved videos resends the entire library.", reply_markup=main_keyboard())
+    elif data == "send_all":
+        await send_all_saved_videos(update, context)
+    elif data == "send_all_confirm":
+        await confirm_send_all(update, context)
+    elif data == "send_all_cancel":
+        await query.edit_message_text("Cancelled. No videos were sent.", reply_markup=main_keyboard())
+    elif data.startswith("favorite:"):
+        uid = data.split(":", 1)[1]
+        item = db.get_video(uid)
+        if not item:
+            await query.answer("Video not found in library.", show_alert=True)
+            return
+        now_favorite = db.toggle_favorite(update.effective_user.id, uid)
+        label = "⭐ Unfavorite" if now_favorite else "⭐ Favorite"
+        keyboard = InlineKeyboardMarkup([[InlineKeyboardButton("▶️ Send video", callback_data=f"sendone:video:{uid}"), InlineKeyboardButton(label, callback_data=f"favorite:{uid}")]])
+        updated_text = (f"🎬 <b>Saved video</b>\nDuration: {fmt_duration(item.get('duration', 0))}\n"
+                        f"Size: {fmt_size(item.get('file_size', 0))}\nStatus: {html.escape(str(item.get('status', 'saved')))}\n"
+                        f"Favorite: {'⭐ Yes' if now_favorite else 'No'}\nID: <code>{html.escape(uid)}</code>")
+        await query.edit_message_text(updated_text, parse_mode="HTML", reply_markup=keyboard)
     elif data == "settings":
         await query.edit_message_text(f"⚙️ Settings\nPhotos: {'ON' if settings.get('accept_photos') else 'OFF'}\nAuto-send: {'paused' if settings.get('pause_auto_flush') else 'on'}", reply_markup=settings_keyboard())
     elif data == "toggle_photos":

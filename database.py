@@ -103,6 +103,7 @@ class Database:
             "CREATE INDEX IF NOT EXISTS idx_videos_user ON videos(user_id)",
             f"CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT NOT NULL, updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)",
             f"CREATE TABLE IF NOT EXISTS statistics (metric TEXT PRIMARY KEY, value BIGINT NOT NULL DEFAULT 0, updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)",
+            "CREATE TABLE IF NOT EXISTS favorites (user_id BIGINT NOT NULL, file_unique_id TEXT NOT NULL, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP, PRIMARY KEY(user_id, file_unique_id))",
             f"CREATE TABLE IF NOT EXISTS users (user_id BIGINT PRIMARY KEY, username TEXT, first_name TEXT, last_name TEXT, is_admin {bool_type} DEFAULT FALSE, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP, last_seen TIMESTAMP DEFAULT CURRENT_TIMESTAMP)"
         ]
         with self.get_connection() as conn:
@@ -257,14 +258,87 @@ class Database:
             cur = self._cursor(conn); cur.execute(self._sql("SELECT file_id,file_unique_id,file_size,duration,width,height,status,created_at FROM videos WHERE file_unique_id=?"), (file_unique_id,)); row = cur.fetchone(); cur.close()
         return self._dict(row)
 
-    def search_videos(self, query: str, user_id: int, limit: int = 10) -> List[Dict[str, Any]]:
-        q = f"%{query.strip()}%"
+    def search_videos_smart(
+        self,
+        query: str,
+        user_id: int,
+        limit: int = 10,
+        min_duration: Optional[int] = None,
+        exact_duration: Optional[int] = None,
+        min_size_mb: Optional[float] = None,
+        max_size_mb: Optional[float] = None,
+    ) -> List[Dict[str, Any]]:
+        """Search by ID text or duration/size filters; size values are MiB."""
+        clauses = ["user_id=?"]
+        params: List[Any] = [user_id]
+        clean_query = (query or "").strip()
+        if clean_query:
+            if clean_query.isdigit():
+                # Numeric search defaults to minimum duration, never substring matching.
+                if min_duration is None and exact_duration is None:
+                    min_duration = int(clean_query)
+            else:
+                clauses.append("(file_unique_id LIKE ? OR file_id LIKE ?)")
+                needle = f"%{clean_query}%"
+                params.extend([needle, needle])
+        if exact_duration is not None:
+            clauses.append("duration=?")
+            params.append(int(exact_duration))
+        elif min_duration is not None:
+            clauses.append("duration>=?")
+            params.append(int(min_duration))
+        if min_size_mb is not None:
+            clauses.append("file_size>=?")
+            params.append(int(float(min_size_mb) * 1024 * 1024))
+        if max_size_mb is not None:
+            clauses.append("file_size<=?")
+            params.append(int(float(max_size_mb) * 1024 * 1024))
+        sql = "SELECT file_id,file_unique_id,file_size,duration,width,height,status,created_at FROM videos WHERE " + " AND ".join(clauses) + " ORDER BY id DESC LIMIT ?"
+        params.append(max(1, min(int(limit), 100)))
         with self.get_connection() as conn:
             cur = self._cursor(conn)
-            cur.execute(self._sql("SELECT file_id,file_unique_id,file_size,duration,width,height,status,created_at FROM videos WHERE user_id=? AND (file_unique_id LIKE ? OR file_id LIKE ? OR CAST(duration AS TEXT) LIKE ? OR CAST(file_size AS TEXT) LIKE ?) ORDER BY id DESC LIMIT ?"), (user_id,q,q,q,q,limit))
-            rows = cur.fetchall(); cur.close()
-        keys = ["file_id","file_unique_id","file_size","duration","width","height","status","created_at"]
-        return [dict(r) if isinstance(r, dict) else dict(zip(keys,r)) for r in rows]
+            cur.execute(self._sql(sql), tuple(params))
+            rows = cur.fetchall()
+            cur.close()
+        keys = ["file_id", "file_unique_id", "file_size", "duration", "width", "height", "status", "created_at"]
+        return [dict(r) if isinstance(r, dict) else dict(zip(keys, r)) for r in rows]
+
+    def search_videos(self, query: str, user_id: int, limit: int = 10) -> List[Dict[str, Any]]:
+        """Backward-compatible wrapper using smart-search behavior."""
+        return self.search_videos_smart(query, user_id, limit=limit)
+
+    def get_all_videos(self, user_id: int, limit: int = 10000) -> List[Dict[str, Any]]:
+        """Return saved videos for one user in oldest-first order for bulk sending."""
+        with self.get_connection() as conn:
+            cur = self._cursor(conn)
+            cur.execute(self._sql("SELECT file_id,file_unique_id,file_size,duration,width,height,status,created_at FROM videos WHERE user_id=? ORDER BY id ASC LIMIT ?"), (user_id, max(1, min(int(limit), 20000))))
+            rows = cur.fetchall()
+            cur.close()
+        keys = ["file_id", "file_unique_id", "file_size", "duration", "width", "height", "status", "created_at"]
+        return [dict(r) if isinstance(r, dict) else dict(zip(keys, r)) for r in rows]
+
+    def is_favorite(self, user_id: int, file_unique_id: str) -> bool:
+        with self.get_connection() as conn:
+            cur = conn.cursor()
+            cur.execute(self._sql("SELECT 1 FROM favorites WHERE user_id=? AND file_unique_id=? LIMIT 1"), (user_id, file_unique_id))
+            found = cur.fetchone() is not None
+            cur.close()
+        return found
+
+    def toggle_favorite(self, user_id: int, file_unique_id: str) -> bool:
+        """Toggle favorite state and return True when the item is now favorited."""
+        with self.get_connection() as conn:
+            cur = conn.cursor()
+            cur.execute(self._sql("SELECT 1 FROM favorites WHERE user_id=? AND file_unique_id=? LIMIT 1"), (user_id, file_unique_id))
+            exists = cur.fetchone() is not None
+            if exists:
+                cur.execute(self._sql("DELETE FROM favorites WHERE user_id=? AND file_unique_id=?"), (user_id, file_unique_id))
+                result = False
+            else:
+                cur.execute(self._sql("INSERT INTO favorites(user_id,file_unique_id) VALUES(?,?)"), (user_id, file_unique_id))
+                result = True
+            cur.close()
+        return result
 
     def get_counts(self, user_id: Optional[int] = None) -> Dict[str, int]:
         with self.get_connection() as conn:
