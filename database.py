@@ -986,6 +986,44 @@ class Database:
             if media_type == "photo": return {"type":media_type,"file_id":r[0],"file_unique_id":r[1],"status":r[2]}
             return {"type":media_type,"file_id":r[0],"file_unique_id":r[1],"label":r[2] or "Document","file_size":r[3] or 0,"status":r[4]}
 
+
+    def get_all_saved_videos(self, limit: int = 100000) -> List[Dict[str, Any]]:
+        """Return saved videos from the shared library, including previously sent videos."""
+        with self.get_connection() as conn:
+            cur = conn.cursor()
+            cur.execute(
+                "SELECT file_id, file_unique_id, file_size, duration, "
+                "width, height, checksum FROM videos ORDER BY id LIMIT "
+                + ("%s" if self.use_postgres else "?"),
+                (limit,),
+            )
+            rows = cur.fetchall()
+            columns = [col[0] for col in cur.description]
+            cur.close()
+            return [dict(zip(columns, row)) for row in rows]
+
+    def delete_saved_video(self, file_unique_id: str) -> bool:
+        """Delete a video from the shared library, all queues, and all favorites."""
+        with self.get_connection() as conn:
+            cur = conn.cursor()
+            p = "%s" if self.use_postgres else "?"
+
+            cur.execute(
+                f"DELETE FROM queue_items WHERE file_unique_id = {p}",
+                (file_unique_id,),
+            )
+            cur.execute(
+                f"DELETE FROM favorites WHERE file_unique_id = {p}",
+                (file_unique_id,),
+            )
+            cur.execute(
+                f"DELETE FROM videos WHERE file_unique_id = {p}",
+                (file_unique_id,),
+            )
+            deleted = cur.rowcount > 0
+            cur.close()
+            return deleted
+
     def get_favorite_count(self, user_id: int) -> int:
         with self.get_connection() as conn:
             cur = conn.cursor()
