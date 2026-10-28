@@ -1143,21 +1143,34 @@ async def send_all_worker(app, chat_id, user_id, source, message_id):
                                 video=item["file_id"],
                             )
                             successful.append(item)
+                        
                         except TelegramError as item_exc:
                             failed.append(item)
+                            db.add_skipped_video(
+                                item,
+                                str(item_exc),
+                                source,
+                            )
                             logger.warning(
                                 "Skipped video %s: %s",
                                 item.get("file_unique_id"),
                                 item_exc,
                             )
 
+                    
                     except TelegramError as item_exc:
                         failed.append(item)
+                        db.add_skipped_video(
+                            item,
+                            str(item_exc),
+                            source,
+                        )
                         logger.warning(
                             "Skipped video %s: %s",
                             item.get("file_unique_id"),
                             item_exc,
                         )
+
 
             # Advance past this batch in the shared library, even when
             # individual videos are invalid. Keep library records intact.
