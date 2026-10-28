@@ -1031,8 +1031,6 @@ async def send_album_to_chat(app, chat_id, user_id, album: List[Dict[str, Any]])
             return False
 
 
-@admin_only
-
 async def send_all_worker(app, chat_id, user_id, source, message_id):
     key = (chat_id, user_id)
     sent = 0
