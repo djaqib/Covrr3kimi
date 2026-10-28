@@ -50,7 +50,6 @@ class Database:
         """Initialize PostgreSQL connection pool"""
         try:
             database_url = os.getenv("DATABASE_URL")
-            # Handle Railway/Heroku format
             if database_url.startswith("postgres://"):
                 database_url = database_url.replace("postgres://", "postgresql://", 1)
                 
@@ -396,6 +395,13 @@ class Database:
             row = cursor.fetchone()
             return row["value"] if row else 0
 
+    def get_all_stats(self) -> Dict[str, int]:
+        with self.get_connection() as conn:
+            cursor = self._cursor(conn)
+            cursor.execute("SELECT metric, value FROM statistics")
+            rows = cursor.fetchall()
+            return {row["metric"]: row["value"] for row in rows}
+
     def get_health_summary(self) -> Dict[str, Any]:
         with self.get_connection() as conn:
             cursor = self._cursor(conn)
@@ -404,14 +410,27 @@ class Database:
             queued = row["count"] if row else 0
             return {"queued": queued}
 
+    def get_queue(self, chat_id: Optional[int] = None) -> List[Dict[str, Any]]:
+        with self.get_connection() as conn:
+            cursor = self._cursor(conn)
+            if chat_id is not None:
+                if self.use_postgres:
+                    cursor.execute("SELECT * FROM queue_items WHERE chat_id = %s ORDER BY added_at ASC", (chat_id,))
+                else:
+                    cursor.execute("SELECT * FROM queue_items WHERE chat_id = ? ORDER BY added_at ASC", (chat_id,))
+            else:
+                cursor.execute("SELECT * FROM queue_items ORDER BY added_at ASC")
+            rows = cursor.fetchall()
+            return [dict(row) for row in rows]
+
     def get_expired_queues(self, timeout: int) -> List[Any]:
         """Finds queues/chat owners whose items have exceeded the flush timeout"""
         with self.get_connection() as conn:
             cursor = self._cursor(conn)
             if self.use_postgres:
+                # Use string formatting for interval to avoid psycopg2 quoting issue
                 cursor.execute(
-                    "SELECT DISTINCT chat_id FROM queue_items WHERE added_at < CURRENT_TIMESTAMP - (%s * INTERVAL '1 second')",
-                    (timeout,)
+                    f"SELECT DISTINCT chat_id FROM queue_items WHERE added_at < CURRENT_TIMESTAMP - INTERVAL '{int(timeout)} seconds'"
                 )
             else:
                 cursor.execute(
