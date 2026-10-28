@@ -685,16 +685,28 @@ async def search_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"• ID: <code>{item['unique_id']}</code>"
         )
 
-        kb = InlineKeyboardMarkup([[
+        
+        buttons = [
             InlineKeyboardButton(
                 "▶️ Open / Send",
-                callback_data=f"playfav:{kind}:{item['unique_id']}"
+                callback_data=f"playfav:{kind}:{item['unique_id']}",
             ),
             InlineKeyboardButton(
                 "⭐ Toggle favorite",
-                callback_data=f"favorite:{kind}:{item['unique_id']}"
+                callback_data=f"favorite:{kind}:{item['unique_id']}",
+            ),
+        ]
+
+        if kind == "video":
+            buttons.append(
+                InlineKeyboardButton(
+                    "🗑 Remove",
+                    callback_data=f"delete_confirm:video:{item['unique_id']}",
+                )
             )
-        ]])
+
+        kb = InlineKeyboardMarkup([buttons])
+
 
         await update.effective_message.reply_text(
             text,
@@ -1164,6 +1176,118 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not data.startswith("favorite:") and not data.startswith("playfav:"):
         await query.answer()
 
+    if data == "send_all_menu":
+        kb = InlineKeyboardMarkup([
+            [InlineKeyboardButton(
+                "📚 All saved library videos",
+                callback_data="send_all:library",
+            )],
+            [InlineKeyboardButton(
+                "📦 Queued videos only",
+                callback_data="send_all:queue",
+            )],
+            [InlineKeyboardButton("🔙 Back", callback_data="queue_status")],
+        ])
+        await query.edit_message_text(
+            "📤 <b>Send All Videos</b>\n\n"
+            "Choose which videos to send. Each batch will be followed "
+            "by a 6-second pause.",
+            parse_mode="HTML",
+            reply_markup=kb,
+        )
+
+    elif data.startswith("send_all:"):
+        source = data.split(":", 1)[1]
+        key = (update.effective_chat.id, update.effective_user.id)
+
+        if source not in ("library", "queue"):
+            await query.answer("Invalid selection", show_alert=True)
+            return
+
+        if key in SEND_ALL_ACTIVE:
+            await query.answer(
+                "A bulk send is already running for this account.",
+                show_alert=True,
+            )
+            return
+
+        SEND_ALL_CANCELLED.discard(key)
+        SEND_ALL_ACTIVE.add(key)
+
+        await query.edit_message_text(
+            "⏳ Starting bulk send...",
+            reply_markup=InlineKeyboardMarkup([[
+                InlineKeyboardButton(
+                    "⏹ Stop",
+                    callback_data="send_all_cancel",
+                )
+            ]]),
+        )
+
+        context.application.create_task(
+            send_all_worker(
+                context.application,
+                key[0],
+                key[1],
+                source,
+                query.message.message_id,
+            )
+        )
+
+    elif data == "send_all_cancel":
+        key = (update.effective_chat.id, update.effective_user.id)
+        if key in SEND_ALL_ACTIVE:
+            SEND_ALL_CANCELLED.add(key)
+            await query.answer("Stopping after the current batch.")
+        else:
+            await query.answer("No bulk send is running.")
+
+    elif data.startswith("delete_confirm:"):
+        _, media_type, unique_id = data.split(":", 2)
+        if media_type != "video":
+            await query.answer("Unsupported media type", show_alert=True)
+            return
+
+        kb = InlineKeyboardMarkup([[
+            InlineKeyboardButton(
+                "🗑 Yes, delete permanently",
+                callback_data=f"delete_do:{media_type}:{unique_id}",
+            ),
+            InlineKeyboardButton(
+                "❌ Cancel",
+                callback_data="delete_cancel",
+            ),
+        ]])
+
+        await query.edit_message_reply_markup(reply_markup=kb)
+        await query.answer(
+            "This deletes the video for every authorized account.",
+            show_alert=True,
+        )
+
+    elif data.startswith("delete_do:"):
+        _, media_type, unique_id = data.split(":", 2)
+
+        if media_type != "video" or not DATABASE_ENABLED:
+            await query.answer("Could not delete this video.", show_alert=True)
+            return
+
+        deleted = db.delete_saved_video(unique_id)
+        if deleted:
+            await query.edit_message_text(
+                "🗑 Video deleted from the shared library, favorites, "
+                "and queues."
+            )
+        else:
+            await query.edit_message_text(
+                "The video was not found. It may already have been deleted."
+            )
+
+    elif data == "delete_cancel":
+        await query.edit_message_text(
+            "Deletion cancelled. The video remains in your library."
+        )
+
     if data == "stats":
         await stats_command(update, context)
     elif data == "queue_status":
@@ -1442,4 +1566,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
