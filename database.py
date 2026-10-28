@@ -395,7 +395,7 @@ class Database:
             row = cursor.fetchone()
             return row["value"] if row else 0
 
-    def get_all_stats(self) -> Dict[str, int]:
+    def get_all_stats(self, *args, **kwargs) -> Dict[str, int]:
         with self.get_connection() as conn:
             cursor = self._cursor(conn)
             cursor.execute("SELECT metric, value FROM statistics")
@@ -410,7 +410,8 @@ class Database:
             queued = row["count"] if row else 0
             return {"queued": queued}
 
-    def get_queue(self, chat_id: Optional[int] = None) -> List[Dict[str, Any]]:
+    def get_queue(self, *args, **kwargs) -> List[Dict[str, Any]]:
+        chat_id = args[0] if args else kwargs.get("chat_id")
         with self.get_connection() as conn:
             cursor = self._cursor(conn)
             if chat_id is not None:
@@ -428,7 +429,6 @@ class Database:
         with self.get_connection() as conn:
             cursor = self._cursor(conn)
             if self.use_postgres:
-                # Use string formatting for interval to avoid psycopg2 quoting issue
                 cursor.execute(
                     f"SELECT DISTINCT chat_id FROM queue_items WHERE added_at < CURRENT_TIMESTAMP - INTERVAL '{int(timeout)} seconds'"
                 )
