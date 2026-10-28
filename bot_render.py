@@ -234,6 +234,12 @@ def get_main_keyboard():
          InlineKeyboardButton("❓ Help", callback_data="help")]
     ])
 
+def get_stats_keyboard():
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton("🧹 Reset statistics", callback_data="reset_stats_confirm")],
+        [InlineKeyboardButton("🔙 Back to menu", callback_data="back_to_main")]
+    ])
+
 def get_photo_settings_keyboard():
     accept = settings.get(ConfigKeys.ACCEPT_PHOTOS, True)
     approval = settings.get(ConfigKeys.PHOTO_APPROVAL_MODE, False)
@@ -582,22 +588,66 @@ async def stats_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         photos = s.get("total_photos", 0)
         docs = s.get("total_documents", 0)
         batches = s.get("total_batches", 0)
+        duplicate_videos = s.get("duplicate_videos", 0)
+        duplicate_photos = s.get("duplicate_photos", 0)
+        duplicate_docs = s.get("duplicate_documents", 0)
+        skipped_photos = s.get("skipped_photos_disabled", 0)
+        skipped_docs = s.get("skipped_documents_disabled", 0)
+        rejected_photos = s.get("rejected_photos", 0)
+        rejected_docs = s.get("rejected_documents", 0)
         start = s.get("bot_start_time", time.time())
     else:
         videos = photos = docs = batches = 0
+        duplicate_videos = duplicate_photos = duplicate_docs = 0
+        skipped_photos = skipped_docs = rejected_photos = rejected_docs = 0
         start = time.time()
 
-    uptime = timedelta(seconds=int(time.time() - start))
+    uptime = timedelta(seconds=max(0, int(time.time() - start)))
+    db_label = ('PostgreSQL ✅' if DATABASE_ENABLED and db.use_postgres
+                else 'SQLite' if DATABASE_ENABLED else 'Disabled')
     text = f"""📊 <b>Statistics</b>
 
-• Videos: {videos}
-• Photos: {photos}
-• Documents: {docs}
-• Batches: {batches}
+<b>Processed:</b>
+• Videos queued: {videos}
+• Photos sent/approved: {photos}
+• Documents sent/approved: {docs}
+• Video batches sent: {batches}
+
+<b>Skipped:</b>
+• Duplicate videos: {duplicate_videos}
+• Duplicate photos: {duplicate_photos}
+• Duplicate documents: {duplicate_docs}
+• Photos while photos were OFF: {skipped_photos}
+• Documents while documents were OFF: {skipped_docs}
+
+<b>Rejected:</b>
+• Photos: {rejected_photos}
+• Documents: {rejected_docs}
 
 • Uptime: {uptime}
-• DB: {'PostgreSQL ✅' if DATABASE_ENABLED and db.use_postgres else 'SQLite' if DATABASE_ENABLED else 'Disabled'}"""
-    await update.message.reply_text(text, parse_mode="HTML")
+• DB: {db_label}"""
+
+    if update.callback_query:
+        await update.callback_query.edit_message_text(
+            text, parse_mode="HTML", reply_markup=get_stats_keyboard()
+        )
+    elif update.message:
+        await update.message.reply_text(
+            text, parse_mode="HTML", reply_markup=get_stats_keyboard()
+        )
+
+@admin_only
+async def reset_stats_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    keyboard = InlineKeyboardMarkup([
+        [InlineKeyboardButton("✅ Yes, reset counters", callback_data="reset_stats_do"),
+         InlineKeyboardButton("❌ Cancel", callback_data="stats")]
+    ])
+    text = ("⚠️ <b>Reset statistics?</b>\n\n"
+            "This resets counters only. Your video/photo/document records and duplicate detection database will NOT be deleted.")
+    if update.callback_query:
+        await update.callback_query.edit_message_text(text, parse_mode="HTML", reply_markup=keyboard)
+    else:
+        await update.message.reply_text(text, parse_mode="HTML", reply_markup=keyboard)
 
 @admin_only
 async def db_info_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -639,13 +689,18 @@ async def handle_video(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if DATABASE_ENABLED:
         if db.video_exists(file_unique_id=video.file_unique_id):
+            db.increment_stat("duplicate_videos")
             return
         if db.video_exists(checksum=checksum):
-            await update.message.reply_text("⚠️ Duplicate")
+            db.increment_stat("duplicate_videos")
+            await update.effective_message.reply_text("⚠️ Duplicate video skipped")
             return
-        db.add_video(video.file_id, video.file_unique_id, checksum,
+        inserted = db.add_video(video.file_id, video.file_unique_id, checksum,
                     video.file_size or 0, video.duration or 0, video.width or 0,
                     video.height or 0, update.effective_chat.id, update.effective_user.id)
+        if not inserted:
+            logger.warning("Video record was not inserted; skipping it without changing processed/duplicate counters")
+            return
         db.increment_stat("total_videos")
 
     batch_count = settings.get(ConfigKeys.BATCH_COUNT, 0) + 1
@@ -674,18 +729,25 @@ async def handle_video(update: Update, context: ContextTypes.DEFAULT_TYPE):
 @admin_only
 async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not settings.get(ConfigKeys.ACCEPT_PHOTOS, True):
-        await update.message.reply_text("🚫 Photos disabled")
+        if DATABASE_ENABLED:
+            db.increment_stat("skipped_photos_disabled")
+        await update.message.reply_text("🚫 Photos disabled, skipped")
         return
 
     message = update.message
     photo = message.photo[-1]
 
     if DATABASE_ENABLED and db.photo_exists(photo.file_unique_id):
-        await update.message.reply_text("⚠️ Duplicate")
+        db.increment_stat("duplicate_photos")
+        await update.message.reply_text("⚠️ Duplicate photo skipped")
         return
 
     if DATABASE_ENABLED:
-        db.add_photo(photo.file_id, photo.file_unique_id, update.effective_chat.id, update.effective_user.id)
+        inserted = db.add_photo(photo.file_id, photo.file_unique_id, update.effective_chat.id, update.effective_user.id)
+        if not inserted:
+            logger.warning("Photo record was not inserted; skipping it without changing processed/duplicate counters")
+            await update.message.reply_text("⚠️ Could not record this photo; skipped to avoid inaccurate statistics")
+            return
 
     if settings.get(ConfigKeys.PHOTO_APPROVAL_MODE, False):
         context.user_data["pending_photo"] = {"file_id": photo.file_id, "file_unique_id": photo.file_unique_id}
@@ -710,20 +772,27 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
 @admin_only
 async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not settings.get(ConfigKeys.ACCEPT_DOCUMENTS, False):
-        await update.message.reply_text("🚫 Docs disabled")
+        if DATABASE_ENABLED:
+            db.increment_stat("skipped_documents_disabled")
+        await update.message.reply_text("🚫 Documents disabled, skipped")
         return
 
     message = update.message
     doc = message.document
 
     if DATABASE_ENABLED and db.document_exists(doc.file_unique_id):
-        await update.message.reply_text("⚠️ Duplicate")
+        db.increment_stat("duplicate_documents")
+        await update.message.reply_text("⚠️ Duplicate document skipped")
         return
 
     if DATABASE_ENABLED:
-        db.add_document(doc.file_id, doc.file_unique_id, doc.file_name,
+        inserted = db.add_document(doc.file_id, doc.file_unique_id, doc.file_name,
                        doc.file_size or 0, doc.mime_type or "unknown",
                        update.effective_chat.id, update.effective_user.id)
+        if not inserted:
+            logger.warning("Document record was not inserted; skipping it without changing processed/duplicate counters")
+            await update.message.reply_text("⚠️ Could not record this document; skipped to avoid inaccurate statistics")
+            return
 
     if settings.get(ConfigKeys.DOCUMENT_APPROVAL_MODE, False):
         context.user_data["pending_document"] = {
@@ -819,6 +888,15 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if data == "stats":
         await stats_command(update, context)
+    elif data == "reset_stats_confirm":
+        await reset_stats_command(update, context)
+    elif data == "reset_stats_do":
+        if not DATABASE_ENABLED:
+            await query.edit_message_text("❌ Database is disabled; statistics cannot be reset.", reply_markup=get_main_keyboard())
+        elif db.reset_stats():
+            await query.edit_message_text("✅ Statistics counters reset. Duplicate-detection records were kept.", reply_markup=get_stats_keyboard())
+        else:
+            await query.edit_message_text("❌ Could not reset statistics. Check the bot logs and database connection.", reply_markup=get_stats_keyboard())
     elif data == "settings":
         await show_settings_menu(update, context)
     elif data == "photo_menu":
@@ -941,6 +1019,7 @@ async def post_init(app):
         BotCommand("ping", "Latency"),
         BotCommand("settings", "Settings"),
         BotCommand("stats", "Stats"),
+        BotCommand("resetstats", "Reset statistics counters"),
         BotCommand("addadmin", "Add admin"),
         BotCommand("removeadmin", "Remove admin"),
         BotCommand("listadmins", "List admins"),
@@ -982,6 +1061,7 @@ def main():
     app.add_handler(CommandHandler("ping", ping_command))
     app.add_handler(CommandHandler("settings", settings_command))
     app.add_handler(CommandHandler("stats", stats_command))
+    app.add_handler(CommandHandler("resetstats", reset_stats_command))
     app.add_handler(CommandHandler("addadmin", add_admin_command))
     app.add_handler(CommandHandler("removeadmin", remove_admin_command))
     app.add_handler(CommandHandler("listadmins", list_admins_command))
