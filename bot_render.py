@@ -665,7 +665,7 @@ kb = InlineKeyboardMarkup([[
     )
 ]])
 
-        await update.effective_message.reply_text(text, parse_mode="HTML", reply_markup=kb)
+        await update.effective_message.reply_text(text, parse_mode="HTML", reply_markup=kb")
 
 @admin_only
 async def favorites_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
