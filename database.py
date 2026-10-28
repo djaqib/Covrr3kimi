@@ -126,7 +126,18 @@ class Database:
                 updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
         """
-
+        # skipped_videos_table
+        skipped_videos_table = """
+            CREATE TABLE IF NOT EXISTS skipped_videos (
+                file_unique_id VARCHAR(255) PRIMARY KEY,
+                file_id VARCHAR(255) NOT NULL,
+                reason TEXT,
+                source VARCHAR(50),
+                attempts INTEGER DEFAULT 1,
+                last_seen TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        """
+      
         # Videos table (track processed videos)
         videos_table = """
             CREATE TABLE IF NOT EXISTS videos (
@@ -292,7 +303,7 @@ class Database:
             cursor.execute(approvals_table)
             cursor.execute(queue_table)
             cursor.execute(favorites_table)
-
+             cursor.execute(skipped_videos_table)                      
             # Insert default statistics if not exist
             default_stats = [
                 ("total_videos", 0),
@@ -1001,7 +1012,93 @@ class Database:
             columns = [col[0] for col in cur.description]
             cur.close()
             return [dict(zip(columns, row)) for row in rows]
+    def add_skipped_video(
+        self, item: Dict[str, Any], reason: str, source: str = "library"
+    ) -> None:
+        """Save or update a video that failed during bulk sending."""
+        with self.get_connection() as conn:
+            cur = conn.cursor()
+            p = "%s" if self.use_postgres else "?"
 
+            if self.use_postgres:
+                cur.execute("""
+                    INSERT INTO skipped_videos
+                        (file_unique_id, file_id, reason, source, attempts)
+                    VALUES (%s, %s, %s, %s, 1)
+                    ON CONFLICT (file_unique_id) DO UPDATE SET
+                        file_id = EXCLUDED.file_id,
+                        reason = EXCLUDED.reason,
+                        source = EXCLUDED.source,
+                        attempts = skipped_videos.attempts + 1,
+                        last_seen = CURRENT_TIMESTAMP
+                """, (
+                    item["file_unique_id"], item["file_id"],
+                    str(reason)[:1000], source
+                ))
+            else:
+                cur.execute("""
+                    INSERT INTO skipped_videos
+                        (file_unique_id, file_id, reason, source, attempts)
+                    VALUES (?, ?, ?, ?, 1)
+                    ON CONFLICT(file_unique_id) DO UPDATE SET
+                        file_id = excluded.file_id,
+                        reason = excluded.reason,
+                        source = excluded.source,
+                        attempts = skipped_videos.attempts + 1,
+                        last_seen = CURRENT_TIMESTAMP
+                """, (
+                    item["file_unique_id"], item["file_id"],
+                    str(reason)[:1000], source
+                ))
+            cur.close()
+
+    def get_skipped_videos(
+        self, limit: int = 8, offset: int = 0
+    ) -> List[Dict[str, Any]]:
+        """Return a page of skipped videos."""
+        with self.get_connection() as conn:
+            cur = conn.cursor()
+            p = "%s" if self.use_postgres else "?"
+            cur.execute(
+                "SELECT file_unique_id, file_id, reason, source, "
+                "attempts, last_seen FROM skipped_videos "
+                f"ORDER BY last_seen DESC LIMIT {p} OFFSET {p}",
+                (limit, offset),
+            )
+            columns = [col[0] for col in cur.description]
+            rows = cur.fetchall()
+            cur.close()
+            return [dict(zip(columns, row)) for row in rows]
+
+    def get_skipped_video_count(self) -> int:
+        with self.get_connection() as conn:
+            cur = conn.cursor()
+            cur.execute("SELECT COUNT(*) FROM skipped_videos")
+            count = cur.fetchone()[0]
+            cur.close()
+            return int(count)
+
+    def remove_skipped_video(self, file_unique_id: str) -> bool:
+        """Remove from the skipped list only; preserve the saved video."""
+        with self.get_connection() as conn:
+            cur = conn.cursor()
+            p = "%s" if self.use_postgres else "?"
+            cur.execute(
+                f"DELETE FROM skipped_videos WHERE file_unique_id = {p}",
+                (file_unique_id,),
+            )
+            removed = cur.rowcount > 0
+            cur.close()
+            return removed
+
+    def clear_skipped_videos(self) -> int:
+        """Clear the skipped list without deleting saved videos."""
+        with self.get_connection() as conn:
+            cur = conn.cursor()
+            cur.execute("DELETE FROM skipped_videos")
+            count = cur.rowcount
+            cur.close()
+            return max(0, count)
     def delete_saved_video(self, file_unique_id: str) -> bool:
         """Delete a video from the shared library, all queues, and all favorites."""
         with self.get_connection() as conn:
