@@ -262,7 +262,7 @@ class Database:
         self,
         query: str,
         user_id: int,
-        limit: int = 10,
+        limit: int = 50,
         min_duration: Optional[int] = None,
         exact_duration: Optional[int] = None,
         min_size_mb: Optional[float] = None,
