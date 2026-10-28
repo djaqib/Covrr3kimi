@@ -1569,8 +1569,9 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         deleted = db.delete_saved_video(unique_id)
         if deleted:
             await query.edit_message_text(
-                "🗑 Video deleted from the shared library, favorites, "
-                "and queues."                        db.remove_skipped_video(unique_id)
+                "🗑 Video deleted from the shared library, favorites,"
+                "and queues.",
+                db.remove_skipped_video(unique_id)
             )
         else:
             await query.edit_message_text(
