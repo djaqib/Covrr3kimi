@@ -303,7 +303,7 @@ class Database:
             cursor.execute(approvals_table)
             cursor.execute(queue_table)
             cursor.execute(favorites_table)
-             cursor.execute(skipped_videos_table)                      
+            cursor.execute(skipped_videos_table)                      
             # Insert default statistics if not exist
             default_stats = [
                 ("total_videos", 0),
