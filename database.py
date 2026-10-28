@@ -76,7 +76,7 @@ class Database:
         )
         self.sqlite_conn.row_factory = sqlite3.Row
         logger.info("SQLite database initialized")
-   
+
     @contextmanager
     def get_connection(self):
         """Get database connection from pool or SQLite"""
@@ -410,8 +410,8 @@ class Database:
             cursor = self._cursor(conn)
             if self.use_postgres:
                 cursor.execute(
-                    "SELECT DISTINCT chat_id FROM queue_items WHERE added_at < CURRENT_TIMESTAMP - INTERVAL '%s seconds'",
-                    (f"{timeout}",)
+                    "SELECT DISTINCT chat_id FROM queue_items WHERE added_at < CURRENT_TIMESTAMP - (%s * INTERVAL '1 second')",
+                    (timeout,)
                 )
             else:
                 cursor.execute(
