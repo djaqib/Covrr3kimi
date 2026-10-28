@@ -424,6 +424,26 @@ class Database:
             rows = cursor.fetchall()
             return [dict(row) for row in rows]
 
+    def search_files(self, *args, **kwargs) -> List[Dict[str, Any]]:
+        query = args[0] if args else kwargs.get("query", "")
+        with self.get_connection() as conn:
+            cursor = self._cursor(conn)
+            if self.use_postgres:
+                cursor.execute(
+                    "SELECT file_id, file_unique_id, file_name, 'document' as media_type FROM documents WHERE file_name ILIKE %s UNION SELECT file_id, file_unique_id, 'Video' as file_name, 'video' as media_type FROM videos WHERE file_id ILIKE %s LIMIT 20",
+                    (f"%{query}%", f"%{query}%")
+                )
+            else:
+                cursor.execute(
+                    "SELECT file_id, file_unique_id, file_name, 'document' as media_type FROM documents WHERE file_name LIKE ? UNION SELECT file_id, file_unique_id, 'Video' as file_name, 'video' as media_type FROM videos WHERE file_id LIKE ? LIMIT 20",
+                    (f"%{query}%", f"%{query}%")
+                )
+            rows = cursor.fetchall()
+            return [dict(row) for row in rows]
+
+    def search(self, *args, **kwargs) -> List[Dict[str, Any]]:
+        return self.search_files(*args, **kwargs)
+
     def get_expired_queues(self, timeout: int) -> List[Any]:
         """Finds queues/chat owners whose items have exceeded the flush timeout"""
         with self.get_connection() as conn:
