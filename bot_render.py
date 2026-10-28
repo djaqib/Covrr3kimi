@@ -54,6 +54,14 @@ USE_WEBHOOK = os.environ.get("USE_WEBHOOK", "true").lower() == "true"
 
 DEFAULT_ADMIN_IDS = [8780988453]
 
+for _admin_id in os.getenv("ADMIN_ID", "").split(","):
+    try:
+        _admin_id = int(_admin_id.strip())
+        if _admin_id not in DEFAULT_ADMIN_IDS:
+            DEFAULT_ADMIN_IDS.append(_admin_id)
+    except (TypeError, ValueError):
+        pass
+
 class ConfigKeys:
     PHOTO_APPROVAL_MODE = "photo_approval_mode"
     DOCUMENT_APPROVAL_MODE = "document_approval_mode"
