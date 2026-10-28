@@ -853,133 +853,192 @@ class Database:
             return [{"chat_id": r[0], "user_id": r[1]} for r in rows]
 
 
-    def search_saved_files(self, user_id: int, query: str, limit: int = 10) -> List[Dict[str, Any]]:
-        """Search the shared library of saved videos, photos, and documents."""
-        q = f"%{query.strip()}%"
-        out: List[Dict[str, Any]] = []
 
-        with self.get_connection() as conn:
-            cur = conn.cursor()
+def search_saved_files(self, user_id: int, query: str, limit: int = 10) -> List[Dict[str, Any]]:
+    """Search shared videos, photos, and documents by ID, size, duration, or filename."""
+    import re
 
-            # Search all saved videos, regardless of which account added them.
-            if self.use_postgres:
-                cur.execute("""
-                    SELECT file_id, file_unique_id, file_size, duration,
-                           width, height, created_at, status
-                    FROM videos
-                    WHERE file_unique_id ILIKE %s
-                       OR file_id ILIKE %s
-                       OR CAST(file_size AS TEXT) ILIKE %s
-                       OR CAST(duration AS TEXT) ILIKE %s
-                    ORDER BY created_at DESC
-                    LIMIT %s
-                """, (q, q, q, q, limit))
-            else:
-                cur.execute("""
-                    SELECT file_id, file_unique_id, file_size, duration,
-                           width, height, created_at, status
-                    FROM videos
-                    WHERE file_unique_id LIKE ?
-                       OR file_id LIKE ?
-                       OR CAST(file_size AS TEXT) LIKE ?
-                       OR CAST(duration AS TEXT) LIKE ?
-                    ORDER BY created_at DESC
-                    LIMIT ?
-                """, (q, q, q, q, limit))
+    raw_query = query.strip()
+    q = f"%{raw_query}%"
+    out: List[Dict[str, Any]] = []
 
-            for r in cur.fetchall():
-                out.append({
-                    "type": "video",
-                    "file_id": r[0],
-                    "unique_id": r[1],
-                    "file_size": r[2] or 0,
-                    "duration": r[3] or 0,
-                    "width": r[4] or 0,
-                    "height": r[5] or 0,
-                    "label": "Video",
-                    "created_at": r[6],
-                    "status": r[7],
-                })
+    # Convert human-readable sizes to bytes.
+    # A decimal number without a unit, such as 193.1, is treated as MB.
+    # An integer without a unit, such as 193100000, is treated as bytes.
+    size_range = None
+    match = re.fullmatch(
+        r"(\d+(?:\.\d+)?)\s*(bytes?|b|kb|kib|mb|mib|gb|gib)?",
+        raw_query.lower(),
+    )
 
-            # Search all saved photos.
-            if self.use_postgres:
-                cur.execute("""
-                    SELECT file_id, file_unique_id, created_at, status
-                    FROM photos
-                    WHERE file_unique_id ILIKE %s OR file_id ILIKE %s
-                    ORDER BY created_at DESC
-                    LIMIT %s
-                """, (q, q, limit))
-            else:
-                cur.execute("""
-                    SELECT file_id, file_unique_id, created_at, status
-                    FROM photos
-                    WHERE file_unique_id LIKE ? OR file_id LIKE ?
-                    ORDER BY created_at DESC
-                    LIMIT ?
-                """, (q, q, limit))
+    if match:
+        number = float(match.group(1))
+        unit = match.group(2)
 
-            for r in cur.fetchall():
-                out.append({
-                    "type": "photo",
-                    "file_id": r[0],
-                    "unique_id": r[1],
-                    "file_size": 0,
-                    "duration": 0,
-                    "width": 0,
-                    "height": 0,
-                    "label": "Photo",
-                    "created_at": r[2],
-                    "status": r[3],
-                })
+        if unit is None:
+            target = number * (1024 ** 2) if "." in match.group(1) else number
+        else:
+            multipliers = {
+                "b": 1,
+                "byte": 1,
+                "bytes": 1,
+                "kb": 1024,
+                "kib": 1024,
+                "mb": 1024 ** 2,
+                "mib": 1024 ** 2,
+                "gb": 1024 ** 3,
+                "gib": 1024 ** 3,
+            }
+            target = number * multipliers[unit]
 
-            # Search all saved documents.
-            if self.use_postgres:
-                cur.execute("""
-                    SELECT file_id, file_unique_id, file_name,
-                           file_size, created_at, status
-                    FROM documents
-                    WHERE COALESCE(file_name, '') ILIKE %s
-                       OR file_unique_id ILIKE %s
-                       OR file_id ILIKE %s
-                       OR CAST(file_size AS TEXT) ILIKE %s
-                    ORDER BY created_at DESC
-                    LIMIT %s
-                """, (q, q, q, q, limit))
-            else:
-                cur.execute("""
-                    SELECT file_id, file_unique_id, file_name,
-                           file_size, created_at, status
-                    FROM documents
-                    WHERE COALESCE(file_name, '') LIKE ?
-                       OR file_unique_id LIKE ?
-                       OR file_id LIKE ?
-                       OR CAST(file_size AS TEXT) LIKE ?
-                    ORDER BY created_at DESC
-                    LIMIT ?
-                """, (q, q, q, q, limit))
-
-            for r in cur.fetchall():
-                out.append({
-                    "type": "document",
-                    "file_id": r[0],
-                    "unique_id": r[1],
-                    "file_size": r[3] or 0,
-                    "duration": 0,
-                    "width": 0,
-                    "height": 0,
-                    "label": r[2] or "Document",
-                    "created_at": r[4],
-                    "status": r[5],
-                })
-
-            cur.close()
-
-        out.sort(
-            key=lambda x: str(x.get("created_at") or ""),
-            reverse=True,
+        # Allow a small tolerance for decimal/binary size differences.
+        tolerance = max(4096, target * 0.05)
+        size_range = (
+            max(0, int(target - tolerance)),
+            int(target + tolerance),
         )
-        return out[:limit]
+
+    with self.get_connection() as conn:
+        cur = conn.cursor()
+
+        # Search shared videos by ID, duration, or size.
+        video_conditions = [
+            "file_unique_id ILIKE %s" if self.use_postgres
+            else "file_unique_id LIKE ?",
+            "file_id ILIKE %s" if self.use_postgres
+            else "file_id LIKE ?",
+            "CAST(duration AS TEXT) LIKE ?",
+            "CAST(file_size AS TEXT) LIKE ?",
+        ]
+        video_params = [q, q, q, q]
+
+        if size_range:
+            video_conditions.append("file_size BETWEEN ? AND ?")
+            video_params.extend(size_range)
+
+        if self.use_postgres:
+            video_conditions = [
+                c.replace(" LIKE ?", " ILIKE %s")
+                for c in video_conditions
+            ]
+            video_conditions = [
+                c.replace(" BETWEEN ? AND ?", " BETWEEN %s AND %s")
+                for c in video_conditions
+            ]
+
+        video_params.append(limit)
+        placeholder = "%s" if self.use_postgres else "?"
+
+        cur.execute(
+            "SELECT file_id, file_unique_id, file_size, duration, "
+            "width, height, created_at, status FROM videos WHERE "
+            + " OR ".join(video_conditions)
+            + f" ORDER BY created_at DESC LIMIT {placeholder}",
+            tuple(video_params),
+        )
+
+        for r in cur.fetchall():
+            out.append({
+                "type": "video",
+                "file_id": r[0],
+                "unique_id": r[1],
+                "file_size": r[2] or 0,
+                "duration": r[3] or 0,
+                "width": r[4] or 0,
+                "height": r[5] or 0,
+                "label": "Video",
+                "created_at": r[6],
+                "status": r[7],
+            })
+
+        # Search shared photos by ID.
+        if self.use_postgres:
+            cur.execute("""
+                SELECT file_id, file_unique_id, created_at, status
+                FROM photos
+                WHERE file_unique_id ILIKE %s OR file_id ILIKE %s
+                ORDER BY created_at DESC LIMIT %s
+            """, (q, q, limit))
+        else:
+            cur.execute("""
+                SELECT file_id, file_unique_id, created_at, status
+                FROM photos
+                WHERE file_unique_id LIKE ? OR file_id LIKE ?
+                ORDER BY created_at DESC LIMIT ?
+            """, (q, q, limit))
+
+        for r in cur.fetchall():
+            out.append({
+                "type": "photo",
+                "file_id": r[0],
+                "unique_id": r[1],
+                "file_size": 0,
+                "duration": 0,
+                "width": 0,
+                "height": 0,
+                "label": "Photo",
+                "created_at": r[2],
+                "status": r[3],
+            })
+
+        # Search documents by filename, ID, or size.
+        doc_conditions = [
+            "COALESCE(file_name, '') ILIKE %s" if self.use_postgres
+            else "COALESCE(file_name, '') LIKE ?",
+            "file_unique_id ILIKE %s" if self.use_postgres
+            else "file_unique_id LIKE ?",
+            "file_id ILIKE %s" if self.use_postgres
+            else "file_id LIKE ?",
+            "CAST(file_size AS TEXT) LIKE ?",
+        ]
+        doc_params = [q, q, q, q]
+
+        if size_range:
+            doc_conditions.append("file_size BETWEEN ? AND ?")
+            doc_params.extend(size_range)
+
+        if self.use_postgres:
+            doc_conditions = [
+                c.replace(" LIKE ?", " ILIKE %s")
+                for c in doc_conditions
+            ]
+            doc_conditions = [
+                c.replace(" BETWEEN ? AND ?", " BETWEEN %s AND %s")
+                for c in doc_conditions
+            ]
+
+        doc_params.append(limit)
+
+        cur.execute(
+            "SELECT file_id, file_unique_id, file_name, file_size, "
+            "created_at, status FROM documents WHERE "
+            + " OR ".join(doc_conditions)
+            + f" ORDER BY created_at DESC LIMIT {placeholder}",
+            tuple(doc_params),
+        )
+
+        for r in cur.fetchall():
+            out.append({
+                "type": "document",
+                "file_id": r[0],
+                "unique_id": r[1],
+                "file_size": r[3] or 0,
+                "duration": 0,
+                "width": 0,
+                "height": 0,
+                "label": r[2] or "Document",
+                "created_at": r[4],
+                "status": r[5],
+            })
+
+        cur.close()
+
+    out.sort(
+        key=lambda x: str(x.get("created_at") or ""),
+        reverse=True,
+    )
+    return out[:limit]
+
 
     def get_media_by_unique_id(self, media_type: str, file_unique_id: str) -> Optional[Dict[str, Any]]:
         tables = {"video": ("videos", "file_id,file_unique_id,file_size,duration,width,height,status"),
