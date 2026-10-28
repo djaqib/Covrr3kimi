@@ -340,8 +340,7 @@ def run_health_server():
     logger.info(f"Health server on port {PORT}")
     server.serve_forever()
 
-@admin_only
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+@admin_only async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     total_videos = db.get_stat("total_videos") if DATABASE_ENABLED else 0
     total_photos = db.get_stat("total_photos") if DATABASE_ENABLED else 0
     total_batches = db.get_stat("total_batches") if DATABASE_ENABLED else 0
