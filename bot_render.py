@@ -1752,28 +1752,36 @@ async def batch_watcher(app):
 async def error_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     logger.error(f"Error: {context.error}")
 
+
 async def post_init(app):
     settings._load_settings()
+
     if DATABASE_ENABLED:
         for admin_id in DEFAULT_ADMIN_IDS:
             db.add_admin(admin_id, first_name="Default Admin")
 
-        commands = [
-        BotCommand("start", "Open the main menu"),
+    commands = [
+        BotCommand("start", "Open main menu"),
         BotCommand("help", "Show all commands"),
         BotCommand("queue", "View queued videos"),
+        BotCommand("flush", "Send queued videos"),
         BotCommand("search", "Search saved files"),
         BotCommand("favorites", "View favorites"),
-        BotCommand("stats", "View statistics"),
         BotCommand("settings", "Open settings"),
-        BotCommand("flush", "Send queued videos"),
-        ]
+        BotCommand("stats", "View statistics"),
+        BotCommand("health", "Check bot health"),
+    ]
+
     await app.bot.set_my_commands(commands)
+
     app.job_queue.run_repeating(
         lambda ctx: asyncio.create_task(batch_watcher(app)),
-        interval=5, first=5
+        interval=5,
+        first=5,
     )
+
     logger.info("✅ Bot initialized")
+
 
 def main():
     BOT_TOKEN = os.getenv("BOT_TOKEN")
