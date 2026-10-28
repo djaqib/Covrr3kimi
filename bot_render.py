@@ -1170,9 +1170,10 @@ async def send_all_worker(app, chat_id, user_id, source, message_id):
                                 item,
                                 str(item_exc),
                                 source,
-                            )                    except TelegramError as item_exc:
-                        failed.append(item)
-                        db.add_skipped_video(
+                            )                   
+                        except TelegramError as item_exc:
+                            failed.append(item)
+                            db.add_skipped_video(
                             item,
                             str(item_exc),
                             source,
