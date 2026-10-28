@@ -246,7 +246,11 @@ def get_main_keyboard():
         [InlineKeyboardButton("📦 Queue", callback_data="queue_status"), InlineKeyboardButton("🚀 Send now", callback_data="flush")],
         [InlineKeyboardButton("🔎 Search files", callback_data="search_help"), InlineKeyboardButton("⭐ Favorites", callback_data="favorites")],
         [InlineKeyboardButton("🩺 Health", callback_data="health"), InlineKeyboardButton("🖼️ Photos", callback_data="photo_menu")],
-        [InlineKeyboardButton("📄 Docs", callback_data="doc_menu"), InlineKeyboardButton("❓ Help", callback_data="help")]
+        [InlineKeyboardButton("📄 Docs", callback_data="doc_menu"), 
+        [InlineKeyboardButton(
+            "⚠️ Skipped Videos", callback_data="skipped_menu"
+        )],         
+InlineKeyboardButton("❓ Help", callback_data="help")]
     ])
 
 def get_queue_keyboard():
@@ -255,7 +259,11 @@ def get_queue_keyboard():
         [InlineKeyboardButton("🚀 Send now", callback_data="flush"), InlineKeyboardButton("🔄 Refresh", callback_data="queue_status")],
         [InlineKeyboardButton("▶️ Resume auto-send" if paused else "⏸ Pause auto-send", callback_data="toggle_pause")],
         [InlineKeyboardButton("📤 Send All Videos", callback_data="send_all_menu")],
-        [InlineKeyboardButton("🗑 Clear queue", callback_data="clear_queue_confirm"), InlineKeyboardButton("🏠 Menu", callback_data="back_to_main")]
+        [InlineKeyboardButton(
+            "⚠️ Skipped Videos",
+         callback_data="skipped_menu"
+        )],            
+      [InlineKeyboardButton("🗑 Clear queue", callback_data="clear_queue_confirm"), InlineKeyboardButton("🏠 Menu", callback_data="back_to_main")]
     ])
 
 def get_stats_keyboard():
@@ -1147,6 +1155,7 @@ async def send_all_worker(app, chat_id, user_id, source, message_id):
                         except TelegramError as item_exc:
                             failed.append(item)
                             db.add_skipped_video(
+                       
                                 item,
                                 str(item_exc),
                                 source,
@@ -1157,8 +1166,11 @@ async def send_all_worker(app, chat_id, user_id, source, message_id):
                                 item_exc,
                             )
 
-                    
-                    except TelegramError as item_exc:
+                            db.add_skipped_video(
+                                item,
+                                str(item_exc),
+                                source,
+                            )                    except TelegramError as item_exc:
                         failed.append(item)
                         db.add_skipped_video(
                             item,
@@ -1263,6 +1275,107 @@ async def send_all_worker(app, chat_id, user_id, source, message_id):
         SEND_ALL_CANCELLED.discard(key)
 
 
+async def show_skipped_menu(query, offset=0):
+    if not DATABASE_ENABLED:
+        await query.edit_message_text(
+            "⚠️ Skipped-video storage requires the database."
+        )
+        return
+
+    try:
+        total = db.get_skipped_video_count()
+        items = db.get_skipped_videos(limit=8, offset=offset)
+
+        if not items:
+            await query.edit_message_text(
+                "✅ No skipped videos!\n\n"
+                "Videos that fail during bulk sending will appear here.",
+                reply_markup=InlineKeyboardMarkup([
+                    [InlineKeyboardButton(
+                        "🔙 Main menu",
+                        callback_data="back_to_main"
+                    )]
+                ]),
+            )
+            return
+
+        buttons = []
+        lines = [
+            "⚠️ SKIPPED VIDEOS",
+            "",
+            f"Total saved for review: {total}",
+            "",
+        ]
+
+        for index, item in enumerate(items, start=offset + 1):
+            uid = item["file_unique_id"]
+            reason = str(item.get("reason") or "Unknown error")
+            attempts = item.get("attempts", 1)
+
+            lines.append(
+                f"{index}. ID: {uid}\n"
+                f"   Attempts: {attempts}\n"
+                f"   Reason: {reason[:100]}\n"
+            )
+
+            buttons.append([
+                InlineKeyboardButton(
+                    f"▶️ Retry #{index}",
+                    callback_data=f"skip_retry:{uid}",
+                ),
+                InlineKeyboardButton(
+                    "🧹 Remove from list",
+                    callback_data=f"skip_remove:{uid}",
+                ),
+            ])
+            buttons.append([
+                InlineKeyboardButton(
+                    f"🗑 Delete #{index} permanently",
+                    callback_data=f"delete_confirm:video:{uid}",
+                )
+            ])
+
+        navigation = []
+        if offset > 0:
+            navigation.append(
+                InlineKeyboardButton(
+                    "⬅️ Previous",
+                    callback_data=f"skipped_page:{max(0, offset - 8)}",
+                )
+            )
+        if offset + 8 < total:
+            navigation.append(
+                InlineKeyboardButton(
+                    "Next ➡️",
+                    callback_data=f"skipped_page:{offset + 8}",
+                )
+            )
+        if navigation:
+            buttons.append(navigation)
+
+        buttons.append([
+            InlineKeyboardButton(
+                "🧹 Clear skipped list",
+                callback_data="skipped_clear_confirm",
+            )
+        ])
+        buttons.append([
+            InlineKeyboardButton(
+                "🔙 Main menu",
+                callback_data="back_to_main",
+            )
+        ])
+
+        await query.edit_message_text(
+            "\n".join(lines),
+            reply_markup=InlineKeyboardMarkup(buttons),
+        )
+
+    except Exception:
+        logger.exception("Could not display skipped videos")
+        await query.edit_message_text(
+            "⚠️ Could not load skipped videos. Check the hosting logs."
+        )
 async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     data = query.data
@@ -1270,6 +1383,92 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not data.startswith("favorite:") and not data.startswith("playfav:"):
         await query.answer()
 
+    if data == "skipped_menu":
+        await show_skipped_menu(query)
+
+    elif data.startswith("skipped_page:"):
+        offset = max(0, int(data.split(":", 1)[1]))
+        await show_skipped_menu(query, offset)
+
+    elif data.startswith("skip_remove:"):
+        unique_id = data.split(":", 1)[1]
+        db.remove_skipped_video(unique_id)
+        await show_skipped_menu(query)
+
+    elif data == "skipped_clear_confirm":
+        kb = InlineKeyboardMarkup([
+            [
+                InlineKeyboardButton(
+                    "✅ Yes, clear list",
+                    callback_data="skipped_clear_do",
+                ),
+                InlineKeyboardButton(
+                    "❌ Cancel",
+                    callback_data="skipped_menu",
+                ),
+            ]
+        ])
+        await query.edit_message_text(
+            "Clear all skipped-video entries?\n\n"
+            "⚠️ This only clears the list. Your saved videos "
+            "will NOT be deleted.",
+            reply_markup=kb,
+        )
+
+    elif data == "skipped_clear_do":
+        count = db.clear_skipped_videos()
+        await query.edit_message_text(
+            f"✅ Cleared {count} skipped-video entries.\n"
+            "Your saved library is unchanged.",
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton(
+                    "🔙 Main menu",
+                    callback_data="back_to_main",
+                )]
+            ]),
+        )
+
+    elif data.startswith("skip_retry:"):
+        unique_id = data.split(":", 1)[1]
+        item = db.get_media_by_unique_id("video", unique_id)
+
+        if not item:
+            db.remove_skipped_video(unique_id)
+            await query.edit_message_text(
+                "This video is no longer in the library.",
+                reply_markup=InlineKeyboardMarkup([
+                    [InlineKeyboardButton(
+                        "🔙 Skipped videos",
+                        callback_data="skipped_menu",
+                    )]
+                ]),
+            )
+        else:
+            try:
+                await context.bot.send_video(
+                    chat_id=update.effective_chat.id,
+                    video=item["file_id"],
+                )
+                db.mark_video_sent(unique_id)
+                db.remove_skipped_video(unique_id)
+                await query.answer("✅ Video sent successfully!")
+                await show_skipped_menu(query)
+            except RetryAfter as exc:
+                await query.answer(
+                    f"Telegram rate limit. Try again in "
+                    f"{int(float(exc.retry_after)) + 1} seconds.",
+                    show_alert=True,
+                )
+            except TelegramError as exc:
+                db.add_skipped_video(
+                    item,
+                    str(exc),
+                    "retry",
+                )
+                await query.answer(
+                    f"❌ Still unable to send: {str(exc)[:150]}",
+                    show_alert=True,
+                )
     if data == "send_all_menu":
         kb = InlineKeyboardMarkup([
             [InlineKeyboardButton(
@@ -1370,7 +1569,7 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if deleted:
             await query.edit_message_text(
                 "🗑 Video deleted from the shared library, favorites, "
-                "and queues."
+                "and queues."                        db.remove_skipped_video(unique_id)
             )
         else:
             await query.edit_message_text(
@@ -1557,36 +1756,16 @@ async def post_init(app):
         for admin_id in DEFAULT_ADMIN_IDS:
             db.add_admin(admin_id, first_name="Default Admin")
 
-    commands = [
-        BotCommand("start", "Show menu"),
-        BotCommand("help", "Help"),
-        BotCommand("id", "Your ID"),
-        BotCommand("ping", "Latency"),
-        BotCommand("settings", "Settings"),
-        BotCommand("stats", "Stats"),
-        BotCommand("queue", "Queue status"),
-        BotCommand("search", "Search saved videos"),
-        BotCommand("favorites", "Show favorites"),
-        BotCommand("health", "Health monitor"),
-        BotCommand("resetstats", "Reset statistics counters"),
-        BotCommand("addadmin", "Add admin"),
-        BotCommand("removeadmin", "Remove admin"),
-        BotCommand("listadmins", "List admins"),
-        BotCommand("toggle_photos", "Toggle photos"),
-        BotCommand("toggle_documents", "Toggle docs"),
-        BotCommand("toggle_photo_approval", "Photo approval"),
-        BotCommand("toggle_doc_approval", "Doc approval"),
-        BotCommand("toggle_strip", "Strip metadata"),
-        BotCommand("toggle_caption", "Auto captions"),
-        BotCommand("set_caption", "Set caption"),
-        BotCommand("set_timeout", "Set timeout"),
-        BotCommand("set_album_size", "Set album size"),
-        BotCommand("approve", "Approve"),
-        BotCommand("reject", "Reject"),
-        BotCommand("flush", "Flush"),
-        BotCommand("clear", "Clear"),
-        BotCommand("dbinfo", "DB info"),
-    ]
+        commands = [
+        BotCommand("start", "Open the main menu"),
+        BotCommand("help", "Show all commands"),
+        BotCommand("queue", "View queued videos"),
+        BotCommand("search", "Search saved files"),
+        BotCommand("favorites", "View favorites"),
+        BotCommand("stats", "View statistics"),
+        BotCommand("settings", "Open settings"),
+        BotCommand("flush", "Send queued videos"),
+        ]
     await app.bot.set_my_commands(commands)
     app.job_queue.run_repeating(
         lambda ctx: asyncio.create_task(batch_watcher(app)),
