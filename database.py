@@ -253,6 +253,11 @@ class Database:
                 ("total_batches", 0),
                 ("rejected_photos", 0),
                 ("rejected_documents", 0),
+                ("duplicate_videos", 0),
+                ("duplicate_photos", 0),
+                ("duplicate_documents", 0),
+                ("skipped_photos_disabled", 0),
+                ("skipped_documents_disabled", 0),
                 ("bot_start_time", int(datetime.now().timestamp()))
             ]
 
@@ -450,8 +455,9 @@ class Database:
                         INSERT OR IGNORE INTO videos (file_id, file_unique_id, checksum, file_size, duration, width, height, chat_id, user_id)
                         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """, (file_id, file_unique_id, checksum, file_size, duration, width, height, chat_id, user_id))
+                inserted = cursor.rowcount > 0
                 cursor.close()
-                return True
+                return inserted
         except Exception as e:
             logger.error(f"Error adding video: {e}")
             return False
@@ -517,8 +523,9 @@ class Database:
                         INSERT OR IGNORE INTO photos (file_id, file_unique_id, chat_id, user_id)
                         VALUES (?, ?, ?, ?)
                     """, (file_id, file_unique_id, chat_id, user_id))
+                inserted = cursor.rowcount > 0
                 cursor.close()
-                return True
+                return inserted
         except Exception as e:
             logger.error(f"Error adding photo: {e}")
             return False
@@ -554,8 +561,9 @@ class Database:
                         INSERT OR IGNORE INTO documents (file_id, file_unique_id, file_name, file_size, mime_type, chat_id, user_id)
                         VALUES (?, ?, ?, ?, ?, ?, ?)
                     """, (file_id, file_unique_id, file_name, file_size, mime_type, chat_id, user_id))
+                inserted = cursor.rowcount > 0
                 cursor.close()
-                return True
+                return inserted
         except Exception as e:
             logger.error(f"Error adding document: {e}")
             return False
@@ -614,6 +622,29 @@ class Database:
             results = cursor.fetchall()
             cursor.close()
             return {row[0]: row[1] for row in results}
+
+    def reset_stats(self) -> bool:
+        """Reset counters without deleting deduplication records or changing uptime."""
+        try:
+            with self.get_connection() as conn:
+                cursor = conn.cursor()
+                if self.use_postgres:
+                    cursor.execute(
+                        "UPDATE statistics SET value = 0, updated_at = CURRENT_TIMESTAMP "
+                        "WHERE metric != %s",
+                        ("bot_start_time",),
+                    )
+                else:
+                    cursor.execute(
+                        "UPDATE statistics SET value = 0, updated_at = datetime('now') "
+                        "WHERE metric != ?",
+                        ("bot_start_time",),
+                    )
+                cursor.close()
+            return True
+        except Exception as e:
+            logger.error(f"Error resetting statistics: {e}")
+            return False
 
     # ==================== PENDING APPROVALS ====================
 
