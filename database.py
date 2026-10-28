@@ -198,6 +198,34 @@ class Database:
             )
         """
 
+        queue_table = """
+            CREATE TABLE IF NOT EXISTS queue_items (
+                id SERIAL PRIMARY KEY,
+                chat_id BIGINT NOT NULL,
+                user_id BIGINT NOT NULL,
+                file_id VARCHAR(255) NOT NULL,
+                file_unique_id VARCHAR(255) NOT NULL,
+                file_size BIGINT DEFAULT 0,
+                duration INTEGER DEFAULT 0,
+                width INTEGER DEFAULT 0,
+                height INTEGER DEFAULT 0,
+                checksum VARCHAR(64),
+                added_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        """
+        favorites_table = """
+            CREATE TABLE IF NOT EXISTS favorites (
+                id SERIAL PRIMARY KEY,
+                user_id BIGINT NOT NULL,
+                media_type VARCHAR(20) NOT NULL,
+                file_unique_id VARCHAR(255) NOT NULL,
+                file_id VARCHAR(255) NOT NULL,
+                label VARCHAR(255),
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                UNIQUE(user_id, media_type, file_unique_id)
+            )
+        """
+
         with self.get_connection() as conn:
             cursor = conn.cursor()
 
@@ -236,6 +264,24 @@ class Database:
                 approvals_table = approvals_table.replace("BIGINT", "INTEGER")
                 approvals_table = approvals_table.replace("TIMESTAMP", "TEXT")
                 approvals_table = approvals_table.replace("DEFAULT CURRENT_TIMESTAMP", "DEFAULT (datetime('now'))")
+                queue_table = queue_table.replace("SERIAL PRIMARY KEY", "INTEGER PRIMARY KEY AUTOINCREMENT")
+                queue_table = queue_table.replace("BIGINT", "INTEGER")
+                queue_table = queue_table.replace("TIMESTAMP", "TEXT")
+                queue_table = queue_table.replace("DEFAULT CURRENT_TIMESTAMP", "DEFAULT (datetime('now'))")
+                favorites_table = favorites_table.replace("SERIAL PRIMARY KEY", "INTEGER PRIMARY KEY AUTOINCREMENT")
+                favorites_table = favorites_table.replace("BIGINT", "INTEGER")
+                favorites_table = favorites_table.replace("TIMESTAMP", "TEXT")
+                favorites_table = favorites_table.replace("DEFAULT CURRENT_TIMESTAMP", "DEFAULT (datetime('now'))")
+                # Replacing TIMESTAMP also changes CURRENT_TIMESTAMP, so normalize any affected defaults.
+                users_table = users_table.replace("DEFAULT CURRENT_TEXT", "DEFAULT (datetime('now'))")
+                settings_table = settings_table.replace("DEFAULT CURRENT_TEXT", "DEFAULT (datetime('now'))")
+                videos_table = videos_table.replace("DEFAULT CURRENT_TEXT", "DEFAULT (datetime('now'))")
+                photos_table = photos_table.replace("DEFAULT CURRENT_TEXT", "DEFAULT (datetime('now'))")
+                stats_table = stats_table.replace("DEFAULT CURRENT_TEXT", "DEFAULT (datetime('now'))")
+                documents_table = documents_table.replace("DEFAULT CURRENT_TEXT", "DEFAULT (datetime('now'))")
+                approvals_table = approvals_table.replace("DEFAULT CURRENT_TEXT", "DEFAULT (datetime('now'))")
+                queue_table = queue_table.replace("DEFAULT CURRENT_TEXT", "DEFAULT (datetime('now'))")
+                favorites_table = favorites_table.replace("DEFAULT CURRENT_TEXT", "DEFAULT (datetime('now'))")
 
             cursor.execute(users_table)
             cursor.execute(settings_table)
@@ -244,6 +290,8 @@ class Database:
             cursor.execute(stats_table)
             cursor.execute(documents_table)
             cursor.execute(approvals_table)
+            cursor.execute(queue_table)
+            cursor.execute(favorites_table)
 
             # Insert default statistics if not exist
             default_stats = [
@@ -489,6 +537,14 @@ class Database:
             cursor.close()
             return False
 
+    def remove_video_record(self, file_unique_id: str) -> None:
+        """Roll back a just-created record if persisting its queue entry fails."""
+        with self.get_connection() as conn:
+            cur = conn.cursor()
+            if self.use_postgres: cur.execute("DELETE FROM videos WHERE file_unique_id=%s AND status='pending'", (file_unique_id,))
+            else: cur.execute("DELETE FROM videos WHERE file_unique_id=? AND status='pending'", (file_unique_id,))
+            cur.close()
+
     def mark_video_sent(self, file_unique_id: str):
         """Mark video as sent"""
         with self.get_connection() as conn:
@@ -712,6 +768,182 @@ class Database:
             result = cursor.fetchone()
             cursor.close()
             return result[0] if result else 0
+
+    # ==================== QUEUE, SEARCH, FAVORITES ====================
+
+    def enqueue_video(self, chat_id: int, user_id: int, video: Dict[str, Any]) -> bool:
+        """Persist a queued video so it survives restarts/deploys."""
+        try:
+            with self.get_connection() as conn:
+                cur = conn.cursor()
+                values = (chat_id, user_id, video["file_id"], video["file_unique_id"],
+                          int(video.get("file_size", 0)), int(video.get("duration", 0)),
+                          int(video.get("width", 0)), int(video.get("height", 0)), video.get("checksum"))
+                if self.use_postgres:
+                    cur.execute("""INSERT INTO queue_items
+                        (chat_id,user_id,file_id,file_unique_id,file_size,duration,width,height,checksum)
+                        VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s)""", values)
+                else:
+                    cur.execute("""INSERT INTO queue_items
+                        (chat_id,user_id,file_id,file_unique_id,file_size,duration,width,height,checksum)
+                        VALUES (?,?,?,?,?,?,?,?,?)""", values)
+                cur.close()
+            return True
+        except Exception as e:
+            logger.error("Could not persist queue item: %s", e)
+            return False
+
+    def get_queue(self, chat_id: int, user_id: int) -> List[Dict[str, Any]]:
+        with self.get_connection() as conn:
+            cur = conn.cursor()
+            if self.use_postgres:
+                cur.execute("SELECT id,file_id,file_unique_id,file_size,duration,width,height,checksum,added_at FROM queue_items WHERE chat_id=%s AND user_id=%s ORDER BY id", (chat_id,user_id))
+            else:
+                cur.execute("SELECT id,file_id,file_unique_id,file_size,duration,width,height,checksum,added_at FROM queue_items WHERE chat_id=? AND user_id=? ORDER BY id", (chat_id,user_id))
+            rows = cur.fetchall()
+            cols = [d[0] for d in cur.description]
+            cur.close()
+            return [dict(zip(cols, row)) for row in rows]
+
+    def clear_queue(self, chat_id: int, user_id: int) -> int:
+        with self.get_connection() as conn:
+            cur = conn.cursor()
+            if self.use_postgres:
+                cur.execute("DELETE FROM queue_items WHERE chat_id=%s AND user_id=%s", (chat_id,user_id))
+            else:
+                cur.execute("DELETE FROM queue_items WHERE chat_id=? AND user_id=?", (chat_id,user_id))
+            count = cur.rowcount
+            cur.close()
+            return count
+
+    def remove_queue_items(self, chat_id: int, user_id: int, unique_ids: List[str]) -> None:
+        if not unique_ids:
+            return
+        with self.get_connection() as conn:
+            cur = conn.cursor()
+            for uid in unique_ids:
+                if self.use_postgres:
+                    cur.execute("DELETE FROM queue_items WHERE chat_id=%s AND user_id=%s AND file_unique_id=%s", (chat_id,user_id,uid))
+                else:
+                    cur.execute("DELETE FROM queue_items WHERE chat_id=? AND user_id=? AND file_unique_id=?", (chat_id,user_id,uid))
+            cur.close()
+
+    def get_expired_queues(self, timeout_seconds: int) -> List[Dict[str, Any]]:
+        """Return queue owners whose oldest/latest queue item has timed out."""
+        with self.get_connection() as conn:
+            cur = conn.cursor()
+            if self.use_postgres:
+                cur.execute("""SELECT chat_id,user_id,MAX(added_at) AS last_added FROM queue_items
+                    GROUP BY chat_id,user_id HAVING MAX(added_at) < CURRENT_TIMESTAMP - (%s * INTERVAL '1 second')""", (timeout_seconds,))
+            else:
+                cur.execute("""SELECT chat_id,user_id,MAX(added_at) AS last_added FROM queue_items
+                    GROUP BY chat_id,user_id HAVING (julianday('now') - julianday(MAX(added_at))) * 86400 > ?""", (timeout_seconds,))
+            rows = cur.fetchall(); cur.close()
+            return [{"chat_id": r[0], "user_id": r[1]} for r in rows]
+
+    def search_saved_files(self, user_id: int, query: str, limit: int = 10) -> List[Dict[str, Any]]:
+        """Search saved videos, photos, and documents owned by this user."""
+        q = f"%{query.strip()}%"
+        out: List[Dict[str, Any]] = []
+        with self.get_connection() as conn:
+            cur = conn.cursor()
+            if self.use_postgres:
+                cur.execute("SELECT file_id,file_unique_id,file_size,duration,width,height,created_at,status FROM videos WHERE user_id=%s AND (file_unique_id ILIKE %s OR file_id ILIKE %s OR CAST(file_size AS TEXT) ILIKE %s OR CAST(duration AS TEXT) ILIKE %s) ORDER BY created_at DESC LIMIT %s", (user_id,q,q,q,q,limit))
+            else:
+                cur.execute("SELECT file_id,file_unique_id,file_size,duration,width,height,created_at,status FROM videos WHERE user_id=? AND (file_unique_id LIKE ? OR file_id LIKE ? OR CAST(file_size AS TEXT) LIKE ? OR CAST(duration AS TEXT) LIKE ?) ORDER BY created_at DESC LIMIT ?", (user_id,q,q,q,q,limit))
+            for r in cur.fetchall():
+                out.append({"type":"video","file_id":r[0],"unique_id":r[1],"file_size":r[2] or 0,"duration":r[3] or 0,"width":r[4] or 0,"height":r[5] or 0,"label":"Video","created_at":r[6],"status":r[7]})
+            if self.use_postgres:
+                cur.execute("SELECT file_id,file_unique_id,created_at,status FROM photos WHERE user_id=%s AND (file_unique_id ILIKE %s OR file_id ILIKE %s) ORDER BY created_at DESC LIMIT %s", (user_id,q,q,limit))
+            else:
+                cur.execute("SELECT file_id,file_unique_id,created_at,status FROM photos WHERE user_id=? AND (file_unique_id LIKE ? OR file_id LIKE ?) ORDER BY created_at DESC LIMIT ?", (user_id,q,q,limit))
+            for r in cur.fetchall():
+                out.append({"type":"photo","file_id":r[0],"unique_id":r[1],"file_size":0,"duration":0,"width":0,"height":0,"label":"Photo","created_at":r[2],"status":r[3]})
+            if self.use_postgres:
+                cur.execute("SELECT file_id,file_unique_id,file_name,file_size,created_at,status FROM documents WHERE user_id=%s AND (COALESCE(file_name,'') ILIKE %s OR file_unique_id ILIKE %s OR file_id ILIKE %s OR CAST(file_size AS TEXT) ILIKE %s) ORDER BY created_at DESC LIMIT %s", (user_id,q,q,q,q,limit))
+            else:
+                cur.execute("SELECT file_id,file_unique_id,file_name,file_size,created_at,status FROM documents WHERE user_id=? AND (COALESCE(file_name,'') LIKE ? OR file_unique_id LIKE ? OR file_id LIKE ? OR CAST(file_size AS TEXT) LIKE ?) ORDER BY created_at DESC LIMIT ?", (user_id,q,q,q,q,limit))
+            for r in cur.fetchall():
+                out.append({"type":"document","file_id":r[0],"unique_id":r[1],"file_size":r[3] or 0,"duration":0,"width":0,"height":0,"label":r[2] or "Document","created_at":r[4],"status":r[5]})
+            cur.close()
+        out.sort(key=lambda x: str(x.get("created_at") or ""), reverse=True)
+        return out[:limit]
+
+    def get_media_by_unique_id(self, media_type: str, file_unique_id: str) -> Optional[Dict[str, Any]]:
+        tables = {"video": ("videos", "file_id,file_unique_id,file_size,duration,width,height,status"),
+                  "photo": ("photos", "file_id,file_unique_id,status"),
+                  "document": ("documents", "file_id,file_unique_id,file_name,file_size,status")}
+        if media_type not in tables: return None
+        table, columns = tables[media_type]
+        with self.get_connection() as conn:
+            cur = conn.cursor()
+            if self.use_postgres: cur.execute(f"SELECT {columns} FROM {table} WHERE file_unique_id=%s", (file_unique_id,))
+            else: cur.execute(f"SELECT {columns} FROM {table} WHERE file_unique_id=?", (file_unique_id,))
+            r = cur.fetchone(); cur.close()
+            if not r: return None
+            if media_type == "video": return {"type":media_type,"file_id":r[0],"file_unique_id":r[1],"file_size":r[2] or 0,"duration":r[3] or 0,"width":r[4] or 0,"height":r[5] or 0,"status":r[6]}
+            if media_type == "photo": return {"type":media_type,"file_id":r[0],"file_unique_id":r[1],"status":r[2]}
+            return {"type":media_type,"file_id":r[0],"file_unique_id":r[1],"label":r[2] or "Document","file_size":r[3] or 0,"status":r[4]}
+
+    def get_favorite_count(self, user_id: int) -> int:
+        with self.get_connection() as conn:
+            cur = conn.cursor()
+            if self.use_postgres: cur.execute("SELECT COUNT(*) FROM favorites WHERE user_id=%s", (user_id,))
+            else: cur.execute("SELECT COUNT(*) FROM favorites WHERE user_id=?", (user_id,))
+            result = cur.fetchone(); cur.close()
+            return int(result[0] if result else 0)
+
+    def toggle_favorite(self, user_id: int, media_type: str, file_unique_id: str, file_id: str, label: str = "") -> bool:
+        """Toggle favorite; returns True if favorited, False if removed."""
+        with self.get_connection() as conn:
+            cur = conn.cursor()
+            if self.use_postgres:
+                cur.execute("SELECT id FROM favorites WHERE user_id=%s AND media_type=%s AND file_unique_id=%s", (user_id,media_type,file_unique_id))
+            else:
+                cur.execute("SELECT id FROM favorites WHERE user_id=? AND media_type=? AND file_unique_id=?", (user_id,media_type,file_unique_id))
+            found = cur.fetchone()
+            if found:
+                if self.use_postgres: cur.execute("DELETE FROM favorites WHERE id=%s", (found[0],))
+                else: cur.execute("DELETE FROM favorites WHERE id=?", (found[0],))
+                cur.close(); return False
+            if self.use_postgres:
+                cur.execute("INSERT INTO favorites (user_id,media_type,file_unique_id,file_id,label) VALUES (%s,%s,%s,%s,%s) ON CONFLICT (user_id,media_type,file_unique_id) DO NOTHING", (user_id,media_type,file_unique_id,file_id,label))
+            else:
+                cur.execute("INSERT OR IGNORE INTO favorites (user_id,media_type,file_unique_id,file_id,label) VALUES (?,?,?,?,?)", (user_id,media_type,file_unique_id,file_id,label))
+            cur.close(); return True
+
+    def get_video_by_unique_id(self, file_unique_id: str) -> Optional[Dict[str, Any]]:
+        with self.get_connection() as conn:
+            cur = conn.cursor()
+            if self.use_postgres:
+                cur.execute("SELECT file_id,file_unique_id,file_size,duration,width,height,status FROM videos WHERE file_unique_id=%s", (file_unique_id,))
+            else:
+                cur.execute("SELECT file_id,file_unique_id,file_size,duration,width,height,status FROM videos WHERE file_unique_id=?", (file_unique_id,))
+            r = cur.fetchone(); cur.close()
+            if not r: return None
+            return {"file_id":r[0],"file_unique_id":r[1],"file_size":r[2] or 0,"duration":r[3] or 0,"width":r[4] or 0,"height":r[5] or 0,"status":r[6]}
+
+    def get_favorites(self, user_id: int, limit: int = 20) -> List[Dict[str, Any]]:
+        with self.get_connection() as conn:
+            cur = conn.cursor()
+            if self.use_postgres:
+                cur.execute("SELECT media_type,file_unique_id,file_id,label,created_at FROM favorites WHERE user_id=%s ORDER BY created_at DESC LIMIT %s", (user_id,limit))
+            else:
+                cur.execute("SELECT media_type,file_unique_id,file_id,label,created_at FROM favorites WHERE user_id=? ORDER BY created_at DESC LIMIT ?", (user_id,limit))
+            rows = cur.fetchall(); cur.close()
+            return [{"media_type":r[0],"file_unique_id":r[1],"file_id":r[2],"label":r[3],"created_at":r[4]} for r in rows]
+
+    def get_health_summary(self) -> Dict[str, int]:
+        with self.get_connection() as conn:
+            cur = conn.cursor()
+            cur.execute("SELECT COUNT(*) FROM queue_items")
+            queued = cur.fetchone()[0]
+            cur.execute("SELECT COUNT(*) FROM videos")
+            videos = cur.fetchone()[0]
+            cur.execute("SELECT COUNT(*) FROM favorites")
+            favorites = cur.fetchone()[0]
+            cur.close()
+            return {"queued": queued, "videos": videos, "favorites": favorites}
 
     # ==================== CLEANUP METHODS ====================
 

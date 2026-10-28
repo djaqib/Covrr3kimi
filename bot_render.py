@@ -66,6 +66,7 @@ class ConfigKeys:
     ALBUM_SIZE = "album_size"
     BATCH_COUNT = "batch_count"
     LAST_VIDEO_TIME = "last_video_time"
+    PAUSE_AUTO_FLUSH = "pause_auto_flush"
 
 DEFAULT_SETTINGS = {
     ConfigKeys.PHOTO_APPROVAL_MODE: False,
@@ -79,6 +80,7 @@ DEFAULT_SETTINGS = {
     ConfigKeys.ALBUM_SIZE: 10,
     ConfigKeys.BATCH_COUNT: 0,
     ConfigKeys.LAST_VIDEO_TIME: 0,
+    ConfigKeys.PAUSE_AUTO_FLUSH: False,
 }
 
 @dataclass
@@ -209,7 +211,8 @@ def admin_only(func):
     return wrapper
 
 def generate_checksum(file_size: int, duration: int, width: int, height: int) -> str:
-    return hashlib.md5(f"{file_size}_{duration}_{width}x{height}".encode()).hexdigest()
+    """Metadata fingerprint only. It is NOT a content hash and must never decide duplicates."""
+    return hashlib.sha256(f"metadata:{file_size}:{duration}:{width}x{height}".encode()).hexdigest()
 
 def format_size(size_bytes: int) -> str:
     if size_bytes < 1024:
@@ -226,12 +229,19 @@ def format_duration(seconds: int) -> str:
 
 def get_main_keyboard():
     return InlineKeyboardMarkup([
-        [InlineKeyboardButton("📊 Stats", callback_data="stats"),
-         InlineKeyboardButton("⚙️ Settings", callback_data="settings")],
-        [InlineKeyboardButton("🖼️ Photos", callback_data="photo_menu"),
-         InlineKeyboardButton("📄 Docs", callback_data="doc_menu")],
-        [InlineKeyboardButton("🚀 Flush", callback_data="flush"),
-         InlineKeyboardButton("❓ Help", callback_data="help")]
+        [InlineKeyboardButton("📊 Stats", callback_data="stats"), InlineKeyboardButton("⚙️ Settings", callback_data="settings")],
+        [InlineKeyboardButton("📦 Queue", callback_data="queue_status"), InlineKeyboardButton("🚀 Send now", callback_data="flush")],
+        [InlineKeyboardButton("🔎 Search files", callback_data="search_help"), InlineKeyboardButton("⭐ Favorites", callback_data="favorites")],
+        [InlineKeyboardButton("🩺 Health", callback_data="health"), InlineKeyboardButton("🖼️ Photos", callback_data="photo_menu")],
+        [InlineKeyboardButton("📄 Docs", callback_data="doc_menu"), InlineKeyboardButton("❓ Help", callback_data="help")]
+    ])
+
+def get_queue_keyboard():
+    paused = settings.get(ConfigKeys.PAUSE_AUTO_FLUSH, False)
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton("🚀 Send now", callback_data="flush"), InlineKeyboardButton("🔄 Refresh", callback_data="queue_status")],
+        [InlineKeyboardButton("▶️ Resume auto-send" if paused else "⏸ Pause auto-send", callback_data="toggle_pause")],
+        [InlineKeyboardButton("🗑 Clear queue", callback_data="clear_queue_confirm"), InlineKeyboardButton("🏠 Menu", callback_data="back_to_main")]
     ])
 
 def get_stats_keyboard():
@@ -241,7 +251,7 @@ def get_stats_keyboard():
     ])
 
 def get_photo_settings_keyboard():
-    accept = settings.get(ConfigKeys.ACCEPT_PHOTOS, True)
+    accept = settings.get(ConfigKeys.ACCEPT_PHOTOS, False)
     approval = settings.get(ConfigKeys.PHOTO_APPROVAL_MODE, False)
     return InlineKeyboardMarkup([
         [InlineKeyboardButton(f"{'✅' if accept else '❌'} Accept Photos", callback_data="toggle_accept_photos")],
@@ -275,15 +285,22 @@ def get_settings_keyboard():
 class HealthCheckHandler(BaseHTTPRequestHandler):
     def do_GET(self):
         if self.path == '/health':
-            self.send_response(200)
+            db_status = "disabled"
+            queue_count = None
+            status_code = 200
+            if DATABASE_ENABLED:
+                try:
+                    summary = db.get_health_summary()
+                    db_status = "connected"
+                    queue_count = summary.get("queued", 0)
+                except Exception as exc:
+                    db_status = "error"
+                    status_code = 503
+                    logger.error("Health-check database failure: %s", exc)
+            self.send_response(status_code)
             self.send_header('Content-type', 'application/json')
             self.end_headers()
-            self.wfile.write(json.dumps({
-                "status": "healthy",
-                "timestamp": datetime.now().isoformat(),
-                "database": "connected" if DATABASE_ENABLED else "disabled",
-                "mode": "webhook" if USE_WEBHOOK else "polling"
-            }).encode())
+            self.wfile.write(json.dumps({"status": "healthy" if status_code == 200 else "degraded", "timestamp": datetime.now().isoformat(), "database": db_status, "queued_items": queue_count, "mode": "webhook" if USE_WEBHOOK else "polling"}).encode())
         elif self.path == '/':
             self.send_response(200)
             self.send_header('Content-type', 'text/html')
@@ -348,9 +365,16 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 /clear - Clear queue
 
 <b>Info:</b>
-/stats - Statistics
+/stats - Statistics dashboard
+/queue - Queue status
+/search &lt;term&gt; - Search saved videos
+/favorites - Favorites
+/health - Health monitor
 /dbinfo - Database info"""
-    await update.message.reply_text(text, parse_mode="HTML")
+    if update.callback_query:
+        await update.callback_query.edit_message_text(text, parse_mode="HTML", reply_markup=get_main_keyboard())
+    else:
+        await update.effective_message.reply_text(text, parse_mode="HTML")
 
 @admin_only
 async def id_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -480,7 +504,7 @@ async def set_album_size_command(update: Update, context: ContextTypes.DEFAULT_T
     try:
         v = int(context.args[0])
         if 1 <= v <= 10:
-            settings.set(ConfigKeys.ALBUM_SIZE, v)
+            settings.set(ConfigKeys.ALBUM_SIZE, max(2, min(10, v)))
             await update.message.reply_text(f"✅ Size: {v}")
         else:
             await update.message.reply_text("❌ 1-10 only")
@@ -493,7 +517,7 @@ async def settings_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def show_settings_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
     strip = settings.get(ConfigKeys.STRIP_METADATA, True)
-    photos = settings.get(ConfigKeys.ACCEPT_PHOTOS, True)
+    photos = settings.get(ConfigKeys.ACCEPT_PHOTOS, False)
     docs = settings.get(ConfigKeys.ACCEPT_DOCUMENTS, False)
     p_approval = settings.get(ConfigKeys.PHOTO_APPROVAL_MODE, False)
     d_approval = settings.get(ConfigKeys.DOCUMENT_APPROVAL_MODE, False)
@@ -526,59 +550,134 @@ async def show_settings_menu(update: Update, context: ContextTypes.DEFAULT_TYPE)
 
 @admin_only
 async def approve_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    target = update.effective_message
     if context.user_data.get("pending_photo"):
-        await update.message.reply_photo(context.user_data["pending_photo"]["file_id"])
-        context.user_data["pending_photo"] = None
-        if DATABASE_ENABLED:
-            db.increment_stat("total_photos")
-        await update.message.reply_text("✅ Approved")
+        photo = context.user_data.pop("pending_photo")
+        await context.bot.send_photo(chat_id=update.effective_chat.id, photo=photo["file_id"])
+        if DATABASE_ENABLED: db.increment_stat("total_photos")
+        if update.callback_query: await update.callback_query.edit_message_text("✅ Photo approved")
+        else: await target.reply_text("✅ Approved")
     elif context.user_data.get("pending_document"):
-        doc = context.user_data["pending_document"]
-        await update.message.reply_document(document=doc["file_id"], filename=doc.get("file_name"))
-        context.user_data["pending_document"] = None
-        if DATABASE_ENABLED:
-            db.increment_stat("total_documents")
-        await update.message.reply_text("✅ Approved")
+        doc = context.user_data.pop("pending_document")
+        await context.bot.send_document(chat_id=update.effective_chat.id, document=doc["file_id"], filename=doc.get("file_name"))
+        if DATABASE_ENABLED: db.increment_stat("total_documents")
+        if update.callback_query: await update.callback_query.edit_message_text("✅ Document approved")
+        else: await target.reply_text("✅ Approved")
     else:
-        await update.message.reply_text("ℹ️ Nothing pending")
+        if update.callback_query: await update.callback_query.edit_message_text("ℹ️ Nothing pending")
+        elif target: await target.reply_text("ℹ️ Nothing pending")
 
 @admin_only
 async def reject_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    target = update.effective_message
     if context.user_data.get("pending_photo"):
-        context.user_data["pending_photo"] = None
-        if DATABASE_ENABLED:
-            db.increment_stat("rejected_photos")
-        await update.message.reply_text("❌ Rejected")
+        context.user_data.pop("pending_photo", None)
+        if DATABASE_ENABLED: db.increment_stat("rejected_photos")
+        text = "❌ Photo rejected"
     elif context.user_data.get("pending_document"):
-        context.user_data["pending_document"] = None
-        if DATABASE_ENABLED:
-            db.increment_stat("rejected_documents")
-        await update.message.reply_text("❌ Rejected")
+        context.user_data.pop("pending_document", None)
+        if DATABASE_ENABLED: db.increment_stat("rejected_documents")
+        text = "❌ Document rejected"
     else:
-        await update.message.reply_text("ℹ️ Nothing pending")
+        text = "ℹ️ Nothing pending"
+    if update.callback_query: await update.callback_query.edit_message_text(text)
+    elif target: await target.reply_text(text)
 
 @admin_only
 async def flush_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    album = context.user_data.get("album", [])
-    if not album:
-        await update.message.reply_text("ℹ️ No videos")
+    chat_id, user_id = update.effective_chat.id, update.effective_user.id
+    before = len(db.get_queue(chat_id, user_id)) if DATABASE_ENABLED else len(context.user_data.get("album", []))
+    if not before:
+        msg = "ℹ️ Your queue is empty."
+        if update.callback_query: await update.callback_query.edit_message_text(msg, reply_markup=get_queue_keyboard())
+        else: await update.effective_message.reply_text(msg, reply_markup=get_queue_keyboard())
         return
-    await send_album(update, context)
-    await update.message.reply_text("✅ Flushed")
+    sent = 0
+    while True:
+        remaining = len(db.get_queue(chat_id, user_id)) if DATABASE_ENABLED else len(context.user_data.get("album", []))
+        if not remaining: break
+        if not await send_album(update, context): break
+        sent += min(10, remaining)
+    remaining = len(db.get_queue(chat_id, user_id)) if DATABASE_ENABLED else len(context.user_data.get("album", []))
+    msg = f"✅ Sent {sent} video(s)." if not remaining else f"⚠️ Sent {sent}; {remaining} remain queued for retry."
+    if update.callback_query: await update.callback_query.edit_message_text(msg, reply_markup=get_queue_keyboard())
+    elif update.effective_message: await update.effective_message.reply_text(msg, reply_markup=get_queue_keyboard())
 
 @admin_only
 async def clear_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    cleared = 0
-    if "album" in context.user_data:
-        cleared += len(context.user_data["album"])
+    if DATABASE_ENABLED:
+        cleared = db.clear_queue(update.effective_chat.id, update.effective_user.id)
+    else:
+        cleared = len(context.user_data.get("album", []))
         context.user_data["album"] = []
-    if context.user_data.get("pending_photo"):
-        context.user_data["pending_photo"] = None
-        cleared += 1
-    if context.user_data.get("pending_document"):
-        context.user_data["pending_document"] = None
-        cleared += 1
-    await update.message.reply_text(f"🗑️ Cleared {cleared}")
+    await update.effective_message.reply_text(f"🗑️ Cleared {cleared} queued video(s).")
+
+@admin_only
+async def queue_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if DATABASE_ENABLED:
+        items = db.get_queue(update.effective_chat.id, update.effective_user.id)
+        total = len(items)
+        size = sum(int(x.get("file_size") or 0) for x in items)
+    else:
+        items = context.user_data.get("album", [])
+        total = len(items)
+        size = sum(getattr(x, "file_size", 0) for x in items)
+    text = f"📦 <b>Queue status</b>\n\n• Videos waiting: <b>{total}</b>\n• Approx. total size: {format_size(size)}\n• Auto-send: {'PAUSED ⏸' if settings.get(ConfigKeys.PAUSE_AUTO_FLUSH, False) else 'ON ▶️'}"
+    if update.callback_query:
+        await update.callback_query.edit_message_text(text, parse_mode="HTML", reply_markup=get_queue_keyboard())
+    else:
+        await update.effective_message.reply_text(text, parse_mode="HTML", reply_markup=get_queue_keyboard())
+
+@admin_only
+async def search_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = " ".join(context.args).strip()
+    if not query:
+        await update.effective_message.reply_text("🔎 Send a search term, ID fragment, duration, or file size. Example: /search 120")
+        return
+    if not DATABASE_ENABLED:
+        await update.effective_message.reply_text("Search needs the database enabled.")
+        return
+    results = db.search_saved_files(update.effective_user.id, query, limit=10)
+    if not results:
+        await update.effective_message.reply_text("No saved videos matched that search.")
+        return
+    for item in results:
+        kind = item["type"]
+        detail = f"\n• Duration: {format_duration(item['duration'])}" if kind == "video" else ""
+        text = f"📁 <b>{item.get('label') or kind.title()}</b>{detail}\n• Size: {format_size(item['file_size'])}\n• Status: {item['status']}\n• ID: <code>{item['unique_id']}</code>"
+        kb = InlineKeyboardMarkup([[InlineKeyboardButton("⭐ Toggle favorite", callback_data=f"favorite:{kind}:{item['unique_id']}")]])
+        await update.effective_message.reply_text(text, parse_mode="HTML", reply_markup=kb)
+
+@admin_only
+async def favorites_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not DATABASE_ENABLED:
+        await update.effective_message.reply_text("Favorites need the database enabled.")
+        return
+    items = db.get_favorites(update.effective_user.id, limit=20)
+    if not items:
+        text = "⭐ You have no favorites yet. Use /search to find saved videos, then tap Toggle favorite."
+        if update.callback_query: await update.callback_query.edit_message_text(text, reply_markup=get_main_keyboard())
+        else: await update.effective_message.reply_text(text, reply_markup=get_main_keyboard())
+        return
+    for item in items:
+        label = item.get("label") or item["media_type"]
+        kb = InlineKeyboardMarkup([[InlineKeyboardButton("▶️ Send again", callback_data=f"playfav:{item['media_type']}:{item['file_unique_id']}")]])
+        await context.bot.send_message(update.effective_chat.id, f"⭐ {label}\n<code>{item['file_unique_id']}</code>", parse_mode="HTML", reply_markup=kb)
+
+@admin_only
+async def health_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    try:
+        summary = db.get_health_summary() if DATABASE_ENABLED else {}
+        db_status = "Connected" if DATABASE_ENABLED else "Disabled"
+        queue = summary.get("queued", 0)
+        videos = summary.get("videos", 0)
+        favorites = summary.get("favorites", 0)
+        text = f"🩺 <b>Health monitor</b>\n\n• Database: {db_status}\n• Saved videos: {videos}\n• Queue items: {queue}\n• Favorites: {favorites}\n• Auto-send: {'Paused' if settings.get(ConfigKeys.PAUSE_AUTO_FLUSH, False) else 'Running'}\n• Uptime: {timedelta(seconds=max(0, int(time.time() - (db.get_stat('bot_start_time') if DATABASE_ENABLED else time.time()))))}"
+    except Exception as exc:
+        logger.exception("Health command failed")
+        text = f"⚠️ Health check failed: {exc.__class__.__name__}"
+    if update.callback_query: await update.callback_query.edit_message_text(text, parse_mode="HTML", reply_markup=get_main_keyboard())
+    else: await update.effective_message.reply_text(text, parse_mode="HTML", reply_markup=get_main_keyboard())
 
 @admin_only
 async def stats_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -605,13 +704,17 @@ async def stats_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     uptime = timedelta(seconds=max(0, int(time.time() - start)))
     db_label = ('PostgreSQL ✅' if DATABASE_ENABLED and db.use_postgres
                 else 'SQLite' if DATABASE_ENABLED else 'Disabled')
-    text = f"""📊 <b>Statistics</b>
+    queue_count = len(db.get_queue(update.effective_chat.id, update.effective_user.id)) if DATABASE_ENABLED else len(context.user_data.get("album", []))
+    favorite_count = db.get_favorite_count(update.effective_user.id) if DATABASE_ENABLED else 0
+    text = f"""📊 <b>Statistics Dashboard</b>
 
 <b>Processed:</b>
-• Videos queued: {videos}
+• Videos saved: {videos}
 • Photos sent/approved: {photos}
 • Documents sent/approved: {docs}
 • Video batches sent: {batches}
+• Videos currently queued: {queue_count}
+• Favorites saved: {favorite_count}
 
 <b>Skipped:</b>
 • Duplicate videos: {duplicate_videos}
@@ -674,61 +777,55 @@ async def db_info_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 @admin_only
 async def handle_video(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    message = update.message
-    if DATABASE_ENABLED:
-        db.set_setting(ConfigKeys.LAST_VIDEO_TIME, time.time())
-    try:
-        await message.delete()
-    except:
-        pass
-    if not message.video:
+    message = update.effective_message
+    video = message.video if message else None
+    if not video:
         return
-
-    video = message.video
     checksum = generate_checksum(video.file_size or 0, video.duration or 0, video.width or 0, video.height or 0)
 
+    # Telegram's file_unique_id is the reliable duplicate key. Metadata fingerprints
+    # are deliberately not used to reject files because unrelated videos can share metadata.
+    if DATABASE_ENABLED and db.video_exists(file_unique_id=video.file_unique_id):
+        db.increment_stat("duplicate_videos")
+        await message.reply_text("⚠️ Exact duplicate video skipped.")
+        return
     if DATABASE_ENABLED:
-        if db.video_exists(file_unique_id=video.file_unique_id):
-            db.increment_stat("duplicate_videos")
-            return
-        if db.video_exists(checksum=checksum):
-            db.increment_stat("duplicate_videos")
-            await update.effective_message.reply_text("⚠️ Duplicate video skipped")
-            return
         inserted = db.add_video(video.file_id, video.file_unique_id, checksum,
                     video.file_size or 0, video.duration or 0, video.width or 0,
                     video.height or 0, update.effective_chat.id, update.effective_user.id)
         if not inserted:
-            logger.warning("Video record was not inserted; skipping it without changing processed/duplicate counters")
+            db.increment_stat("duplicate_videos")
+            await message.reply_text("⚠️ This video was already saved or could not be recorded, so I skipped it safely.")
+            return
+        payload = {"file_id":video.file_id,"file_unique_id":video.file_unique_id,"file_size":video.file_size or 0,"duration":video.duration or 0,"width":video.width or 0,"height":video.height or 0,"checksum":checksum}
+        if not db.enqueue_video(update.effective_chat.id, update.effective_user.id, payload):
+            try: db.remove_video_record(video.file_unique_id)
+            except Exception: logger.exception("Could not roll back video record after queue failure")
+            await message.reply_text("⚠️ Could not save this video to the persistent queue. Please resend it.")
             return
         db.increment_stat("total_videos")
+        progress_count = db.get_stat("total_videos")
+    else:
+        context.user_data.setdefault("album", []).append(VideoInfo(video.file_id, video.file_unique_id, video.file_size or 0, video.duration or 0, video.width or 0, video.height or 0, time.time(), checksum))
+        progress_count = len(context.user_data.get("album", []))
 
-    batch_count = settings.get(ConfigKeys.BATCH_COUNT, 0) + 1
-    settings.set(ConfigKeys.BATCH_COUNT, batch_count)
-
-    if batch_count % 5 == 0:
-        await update.message.reply_text(f"📥 {batch_count} videos…")
-
-    if "album" not in context.user_data:
-        context.user_data["album"] = []
-
-    context.user_data["album"].append(VideoInfo(
-        file_id=video.file_id,
-        file_unique_id=video.file_unique_id,
-        file_size=video.file_size or 0,
-        duration=video.duration or 0,
-        width=video.width or 0,
-        height=video.height or 0,
-        timestamp=time.time(),
-        checksum=checksum
-    ))
-
-    if len(context.user_data["album"]) >= settings.get(ConfigKeys.ALBUM_SIZE, 10):
-        await send_album(update, context)
+    settings.set(ConfigKeys.LAST_VIDEO_TIME, time.time())
+    if not settings.get(ConfigKeys.PAUSE_AUTO_FLUSH, False):
+        count = len(db.get_queue(update.effective_chat.id, update.effective_user.id)) if DATABASE_ENABLED else len(context.user_data.get("album", []))
+        if count >= max(2, min(10, int(settings.get(ConfigKeys.ALBUM_SIZE, 10)))):
+            await send_album(update, context)
+    # Avoid spamming the chat for every clip. Queue status is available by button or /queue.
+    if progress_count and progress_count % 50 == 0:
+        state = "paused" if settings.get(ConfigKeys.PAUSE_AUTO_FLUSH, False) else "active"
+        await context.bot.send_message(chat_id=update.effective_chat.id, text=f"📥 Progress: {progress_count} videos saved. Auto-send is {state}.")
+    try:
+        await message.delete()
+    except Exception:
+        pass
 
 @admin_only
 async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not settings.get(ConfigKeys.ACCEPT_PHOTOS, True):
+    if not settings.get(ConfigKeys.ACCEPT_PHOTOS, False):
         if DATABASE_ENABLED:
             db.increment_stat("skipped_photos_disabled")
         await update.message.reply_text("🚫 Photos disabled, skipped")
@@ -818,76 +915,125 @@ async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if DATABASE_ENABLED:
             db.increment_stat("total_documents")
 
-async def send_album(update: Update, context: ContextTypes.DEFAULT_TYPE, chat_id: Optional[int] = None):
-    album = context.user_data.get("album", [])
+async def send_album(update: Update, context: ContextTypes.DEFAULT_TYPE) -> bool:
+    chat_id = update.effective_chat.id if update and update.effective_chat else None
+    user_id = update.effective_user.id if update and update.effective_user else None
+    if DATABASE_ENABLED and chat_id is not None and user_id is not None:
+        records = db.get_queue(chat_id, user_id)
+        album = [VideoInfo(file_id=r["file_id"], file_unique_id=r["file_unique_id"], file_size=int(r.get("file_size") or 0), duration=int(r.get("duration") or 0), width=int(r.get("width") or 0), height=int(r.get("height") or 0), timestamp=time.time(), checksum=r.get("checksum") or "") for r in records[:10]]
+    else:
+        album = list(context.user_data.get("album", []))[:10]
     if not album:
-        return
+        return False
 
-    await asyncio.sleep(random.uniform(1.5, 3))
-
-    media_group = []
     strip = settings.get(ConfigKeys.STRIP_METADATA, True)
     auto_caption = settings.get(ConfigKeys.AUTO_CAPTION_MODE, False)
     template = settings.get(ConfigKeys.CAPTION_TEMPLATE, "")
+    try:
+        if len(album) == 1:
+            v = album[0]
+            caption = None
+            if not strip and auto_caption:
+                caption = template.format(index=1,total=1,duration=format_duration(v.duration),size=format_size(v.file_size)) if template else "📹 1/1"
+            await context.bot.send_video(chat_id=chat_id, video=v.file_id, caption=caption)
+        else:
+            media_group = []
+            for idx, v in enumerate(album):
+                caption = None
+                if not strip and auto_caption:
+                    caption = template.format(index=idx+1,total=len(album),duration=format_duration(v.duration),size=format_size(v.file_size)) if template else f"📹 {idx+1}/{len(album)}"
+                media_group.append(InputMediaVideo(media=v.file_id, caption=caption))
+            await context.bot.send_media_group(chat_id=chat_id, media=media_group)
+        if DATABASE_ENABLED:
+            db.remove_queue_items(chat_id, user_id, [v.file_unique_id for v in album])
+            if len(album) > 1: db.increment_stat("total_batches")
+            for v in album: db.mark_video_sent(v.file_unique_id)
+        else:
+            context.user_data["album"] = context.user_data.get("album", [])[len(album):]
+        return True
+    except RetryAfter as exc:
+        logger.warning("Telegram rate limited queue send: %s", exc)
+        await asyncio.sleep(float(exc.retry_after) + 1)
+    except (TimedOut, TelegramError) as exc:
+        logger.error("Queue send failed; retaining items for retry: %s", exc)
+    except Exception:
+        logger.exception("Unexpected queue send failure; retaining items for retry")
+    return False
 
-    for idx, v in enumerate(album):
-        caption = None
-        if not strip and auto_caption:
-            if template:
-                caption = template.format(
-                    index=idx+1, total=len(album),
-                    duration=format_duration(v.duration),
-                    size=format_size(v.file_size)
-                )
-            else:
-                caption = f"📹 {idx+1}/{len(album)}"
-        media_group.append(InputMediaVideo(media=v.file_id, caption=caption))
-
-    target = chat_id or update.effective_chat.id
-
-    for attempt in range(3):
-        try:
-            if update and update.message:
-                await update.message.reply_media_group(media_group)
-            else:
-                await context.bot.send_media_group(target, media_group)
-            context.user_data["album"] = []
-            if DATABASE_ENABLED:
-                db.increment_stat("total_batches")
-                for v in album:
-                    db.mark_video_sent(v.file_unique_id)
-            if update and update.message:
-                await update.message.reply_text(f"✅ Sent {len(album)}")
-            return
-        except RetryAfter as e:
-            await asyncio.sleep(e.retry_after + 1)
-        except Exception as e:
-            logger.error(f"Send error: {e}")
-            await asyncio.sleep(2)
-
-async def send_album_to_chat(app, chat_id, album: List[VideoInfo]):
+async def send_album_to_chat(app, chat_id, user_id, album: List[Dict[str, Any]]):
     if not album:
-        return
-    strip = settings.get(ConfigKeys.STRIP_METADATA, True)
-    media = [InputMediaVideo(media=v.file_id, caption=None if strip else "📹") for v in album]
-    for attempt in range(3):
-        try:
-            await app.bot.send_media_group(chat_id, media)
-            if DATABASE_ENABLED:
-                db.increment_stat("total_batches")
-            return
-        except Exception as e:
-            logger.error(f"Error: {e}")
-            await asyncio.sleep(2 ** attempt)
+        return False
+    try:
+        items = album[:10]
+        if len(items) == 1:
+            await app.bot.send_video(chat_id=chat_id, video=items[0]["file_id"])
+        else:
+            media = [InputMediaVideo(media=v["file_id"]) for v in items]
+            await app.bot.send_media_group(chat_id=chat_id, media=media)
+        if DATABASE_ENABLED:
+            db.remove_queue_items(chat_id, user_id, [v["file_unique_id"] for v in items])
+            if len(items) > 1: db.increment_stat("total_batches")
+            for v in items: db.mark_video_sent(v["file_unique_id"])
+        return True
+    except Exception as exc:
+        logger.error("Auto-send failed; queue retained for retry: %s", exc)
+        return False
 
 @admin_only
 async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
-    await query.answer()
     data = query.data
+    # Favorite/play callbacks provide their own toast; acknowledge all other callbacks here.
+    if not data.startswith("favorite:") and not data.startswith("playfav:"):
+        await query.answer()
 
     if data == "stats":
         await stats_command(update, context)
+    elif data == "queue_status":
+        await queue_command(update, context)
+    elif data == "toggle_pause":
+        settings.toggle(ConfigKeys.PAUSE_AUTO_FLUSH)
+        await queue_command(update, context)
+    elif data == "clear_queue_confirm":
+        kb = InlineKeyboardMarkup([[InlineKeyboardButton("✅ Clear it", callback_data="clear_queue_do"), InlineKeyboardButton("Cancel", callback_data="queue_status")]])
+        await query.edit_message_text("Clear every video currently waiting in your queue? Saved-file records will remain.", reply_markup=kb)
+    elif data == "clear_queue_do":
+        count = db.clear_queue(update.effective_chat.id, update.effective_user.id) if DATABASE_ENABLED else len(context.user_data.get("album", []))
+        context.user_data["album"] = []
+        await query.edit_message_text(f"🗑 Cleared {count} queued video(s).", reply_markup=get_queue_keyboard())
+    elif data == "search_help":
+        await query.edit_message_text("🔎 Search your saved videos by sending /search followed by an ID fragment, duration, or file size. Example: /search 120", reply_markup=get_main_keyboard())
+    elif data == "favorites":
+        await favorites_command(update, context)
+    elif data == "health":
+        await health_command(update, context)
+    elif data.startswith("favorite:"):
+        parts = data.split(":", 2)
+        if len(parts) == 3 and DATABASE_ENABLED:
+            media_type, unique_id = parts[1], parts[2]
+            record = db.get_media_by_unique_id(media_type, unique_id)
+            if record:
+                added = db.toggle_favorite(update.effective_user.id, media_type, unique_id, record["file_id"], record.get("label") or f"{media_type.title()} {unique_id}")
+                await query.answer("Added to favorites ⭐" if added else "Removed from favorites", show_alert=False)
+            else:
+                await query.answer("Saved file not found", show_alert=True)
+        else:
+            await query.answer("Invalid favorite", show_alert=True)
+    elif data.startswith("playfav:"):
+        parts = data.split(":", 2)
+        if len(parts) == 3 and DATABASE_ENABLED:
+            media_type, unique_id = parts[1], parts[2]
+            record = db.get_media_by_unique_id(media_type, unique_id)
+        else:
+            record = None
+            media_type = ""
+        if record:
+            if media_type == "video": await context.bot.send_video(chat_id=update.effective_chat.id, video=record["file_id"])
+            elif media_type == "photo": await context.bot.send_photo(chat_id=update.effective_chat.id, photo=record["file_id"])
+            else: await context.bot.send_document(chat_id=update.effective_chat.id, document=record["file_id"])
+            await query.answer("Sent")
+        else:
+            await query.answer("File no longer exists", show_alert=True)
     elif data == "reset_stats_confirm":
         await reset_stats_command(update, context)
     elif data == "reset_stats_do":
@@ -928,7 +1074,6 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     elif data == "reset_settings":
         for k, v in DEFAULT_SETTINGS.items():
             settings.set(k, v)
-        await query.answer("✅ Reset", show_alert=True)
         await show_settings_menu(update, context)
     elif data == "flush":
         await flush_command(update, context)
@@ -952,11 +1097,11 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     elif data.startswith("album_"):
         change = int(data.split("_")[1])
         current = settings.get(ConfigKeys.ALBUM_SIZE, 10)
-        settings.set(ConfigKeys.ALBUM_SIZE, max(1, min(10, current + change)))
+        settings.set(ConfigKeys.ALBUM_SIZE, max(2, min(10, current + change)))
         await show_album_menu(update, context)
 
 async def show_photo_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    accept = settings.get(ConfigKeys.ACCEPT_PHOTOS, True)
+    accept = settings.get(ConfigKeys.ACCEPT_PHOTOS, False)
     approval = settings.get(ConfigKeys.PHOTO_APPROVAL_MODE, False)
     text = f"🖼️ <b>Photo Settings</b>\n\n• Accept: {'ON ✅' if accept else 'OFF ❌'}\n• Approval: {'ON ✅' if approval else 'OFF ❌'}"
     await update.callback_query.edit_message_text(text, parse_mode="HTML", reply_markup=get_photo_settings_keyboard())
@@ -990,18 +1135,23 @@ async def show_album_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.callback_query.edit_message_text(f"📦 Size: {current}", reply_markup=kb)
 
 async def batch_watcher(app):
-    now = time.time()
-    last = settings.get(ConfigKeys.LAST_VIDEO_TIME, 0)
-    timeout = settings.get(ConfigKeys.FLUSH_TIMEOUT, 60)
-    for chat_id, data in list(app.chat_data.items()):
-        album = data.get("album", [])
-        if album and now - last >= timeout:
-            try:
-                await app.bot.send_message(chat_id, "⏰ Timeout")
-                await send_album_to_chat(app, chat_id, album)
-                data["album"] = []
-            except Exception as e:
-                logger.error(f"Watcher: {e}")
+    if settings.get(ConfigKeys.PAUSE_AUTO_FLUSH, False):
+        return
+    timeout = int(settings.get(ConfigKeys.FLUSH_TIMEOUT, 100))
+    if not DATABASE_ENABLED:
+        return
+    try:
+        owners = db.get_expired_queues(timeout)
+        for owner in owners:
+            chat_id, user_id = owner["chat_id"], owner["user_id"]
+            items = db.get_queue(chat_id, user_id)
+            while items:
+                chunk = items[:10]
+                if not await send_album_to_chat(app, chat_id, user_id, chunk):
+                    break
+                items = db.get_queue(chat_id, user_id)
+    except Exception as exc:
+        logger.exception("Persistent batch watcher failed: %s", exc)
 
 async def error_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     logger.error(f"Error: {context.error}")
@@ -1019,6 +1169,10 @@ async def post_init(app):
         BotCommand("ping", "Latency"),
         BotCommand("settings", "Settings"),
         BotCommand("stats", "Stats"),
+        BotCommand("queue", "Queue status"),
+        BotCommand("search", "Search saved videos"),
+        BotCommand("favorites", "Show favorites"),
+        BotCommand("health", "Health monitor"),
         BotCommand("resetstats", "Reset statistics counters"),
         BotCommand("addadmin", "Add admin"),
         BotCommand("removeadmin", "Remove admin"),
@@ -1061,6 +1215,10 @@ def main():
     app.add_handler(CommandHandler("ping", ping_command))
     app.add_handler(CommandHandler("settings", settings_command))
     app.add_handler(CommandHandler("stats", stats_command))
+    app.add_handler(CommandHandler("queue", queue_command))
+    app.add_handler(CommandHandler("search", search_command))
+    app.add_handler(CommandHandler("favorites", favorites_command))
+    app.add_handler(CommandHandler("health", health_command))
     app.add_handler(CommandHandler("resetstats", reset_stats_command))
     app.add_handler(CommandHandler("addadmin", add_admin_command))
     app.add_handler(CommandHandler("removeadmin", remove_admin_command))
