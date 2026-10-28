@@ -77,7 +77,6 @@ class Database:
         self.sqlite_conn.row_factory = sqlite3.Row
         logger.info("SQLite database initialized")
 
-    @contextmanager
     def get_connection(self):
         """Get database connection from pool or SQLite"""
         if self.use_postgres:
@@ -102,7 +101,7 @@ class Database:
     def _cursor(self, conn):
         """Helper to get a dictionary-returning cursor for both PostgreSQL and SQLite"""
         if self.use_postgres:
-            return conn.cursor(cursor_factory=RealDictCursor)
+            return conn.cursor(cursor_factory=RealDictCursr)
         else:
             return conn.cursor()
 
