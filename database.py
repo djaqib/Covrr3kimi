@@ -99,10 +99,16 @@ class Database:
                     self.sqlite_conn.rollback()
                     raise e
 
+    def _cursor(self, conn):
+        """Helper to get a dictionary-returning cursor for both PostgreSQL and SQLite"""
+        if self.use_postgres:
+            return conn.cursor(cursor_factory=RealDictCursor)
+        else:
+            return conn.cursor()
+
     def _create_tables(self):
         """Create necessary tables"""
 
-        # Users table (for admin management)
         users_table = """
             CREATE TABLE IF NOT EXISTS users (
                 user_id BIGINT PRIMARY KEY,
@@ -116,7 +122,6 @@ class Database:
             )
         """
 
-        # Settings table (persistent configuration)
         settings_table = """
             CREATE TABLE IF NOT EXISTS settings (
                 key VARCHAR(255) PRIMARY KEY,
@@ -125,7 +130,6 @@ class Database:
             )
         """
 
-        # skipped_videos_table
         skipped_videos_table = """
             CREATE TABLE IF NOT EXISTS skipped_videos (
                 file_unique_id VARCHAR(255) PRIMARY KEY,
@@ -137,7 +141,6 @@ class Database:
             )
         """
 
-        # Videos table (track processed videos)
         videos_table = """
             CREATE TABLE IF NOT EXISTS videos (
                 id SERIAL PRIMARY KEY,
@@ -156,7 +159,6 @@ class Database:
             )
         """
 
-        # Photos table (track processed photos)
         photos_table = """
             CREATE TABLE IF NOT EXISTS photos (
                 id SERIAL PRIMARY KEY,
@@ -169,7 +171,6 @@ class Database:
             )
         """
 
-        # Statistics table
         stats_table = """
             CREATE TABLE IF NOT EXISTS statistics (
                 id SERIAL PRIMARY KEY,
@@ -179,7 +180,6 @@ class Database:
             )
         """
 
-        # Document/Files table
         documents_table = """
             CREATE TABLE IF NOT EXISTS documents (
                 id SERIAL PRIMARY KEY,
@@ -195,7 +195,6 @@ class Database:
             )
         """
 
-        # Pending approvals table
         approvals_table = """
             CREATE TABLE IF NOT EXISTS pending_approvals (
                 id SERIAL PRIMARY KEY,
@@ -240,7 +239,6 @@ class Database:
         with self.get_connection() as conn:
             cursor = conn.cursor()
 
-            # Adjust syntax for SQLite
             if not self.use_postgres:
                 for table_name in ['users_table', 'settings_table', 'skipped_videos_table', 'videos_table', 'photos_table', 'stats_table', 'documents_table', 'approvals_table', 'queue_table', 'favorites_table']:
                     locals()[table_name] = locals()[table_name].replace("SERIAL PRIMARY KEY", "INTEGER PRIMARY KEY AUTOINCREMENT")
@@ -272,7 +270,6 @@ class Database:
             cursor.execute(favorites_table)
             cursor.execute(skipped_videos_table)
 
-            # Insert default statistics if not exist
             default_stats = [
                 ("total_videos", 0),
                 ("total_photos", 0),
@@ -300,11 +297,11 @@ class Database:
                         (metric, value)
                     )
 
-    # --- Added Helper Methods for bot_render.py Integration ---
+    # --- Helper & Integration Methods ---
 
     def get_all_settings(self) -> Dict[str, Any]:
         with self.get_connection() as conn:
-            cursor = conn.cursor()
+            cursor = self._cursor(conn)
             cursor.execute("SELECT key, value FROM settings")
             rows = cursor.fetchall()
             settings = {}
@@ -319,7 +316,7 @@ class Database:
     def set_setting(self, key: str, value: Any):
         val_str = json.dumps(value) if not isinstance(value, str) else value
         with self.get_connection() as conn:
-            cursor = conn.cursor()
+            cursor = self._cursor(conn)
             if self.use_postgres:
                 cursor.execute(
                     "INSERT INTO settings (key, value, updated_at) VALUES (%s, %s, CURRENT_TIMESTAMP) ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = CURRENT_TIMESTAMP",
@@ -333,7 +330,7 @@ class Database:
 
     def is_admin(self, user_id: int) -> bool:
         with self.get_connection() as conn:
-            cursor = conn.cursor()
+            cursor = self._cursor(conn)
             if self.use_postgres:
                 cursor.execute("SELECT is_admin FROM users WHERE user_id = %s", (user_id,))
             else:
@@ -343,7 +340,7 @@ class Database:
 
     def add_admin(self, user_id: int, username: str = None, first_name: str = None, last_name: str = None) -> bool:
         with self.get_connection() as conn:
-            cursor = conn.cursor()
+            cursor = self._cursor(conn)
             if self.use_postgres:
                 cursor.execute(
                     "INSERT INTO users (user_id, username, first_name, last_name, is_admin) VALUES (%s, %s, %s, %s, TRUE) ON CONFLICT (user_id) DO UPDATE SET is_admin = TRUE, username = EXCLUDED.username, first_name = EXCLUDED.first_name, last_name = EXCLUDED.last_name",
@@ -358,7 +355,7 @@ class Database:
 
     def remove_admin(self, user_id: int) -> bool:
         with self.get_connection() as conn:
-            cursor = conn.cursor()
+            cursor = self._cursor(conn)
             if self.use_postgres:
                 cursor.execute("UPDATE users SET is_admin = FALSE WHERE user_id = %s", (user_id,))
             else:
@@ -367,7 +364,7 @@ class Database:
 
     def get_all_admins(self) -> List[Dict[str, Any]]:
         with self.get_connection() as conn:
-            cursor = conn.cursor()
+            cursor = self._cursor(conn)
             if self.use_postgres:
                 cursor.execute("SELECT user_id, username, first_name, last_name FROM users WHERE is_admin = TRUE")
             else:
@@ -377,7 +374,7 @@ class Database:
 
     def update_user_activity(self, user_id: int, username: str = None, first_name: str = None, last_name: str = None):
         with self.get_connection() as conn:
-            cursor = conn.cursor()
+            cursor = self._cursor(conn)
             if self.use_postgres:
                 cursor.execute(
                     "INSERT INTO users (user_id, username, first_name, last_name, last_seen) VALUES (%s, %s, %s, %s, CURRENT_TIMESTAMP) ON CONFLICT (user_id) DO UPDATE SET username = EXCLUDED.username, first_name = EXCLUDED.first_name, last_name = EXCLUDED.last_name, last_seen = CURRENT_TIMESTAMP",
@@ -391,7 +388,7 @@ class Database:
 
     def get_stat(self, metric: str) -> int:
         with self.get_connection() as conn:
-            cursor = conn.cursor()
+            cursor = self._cursor(conn)
             if self.use_postgres:
                 cursor.execute("SELECT value FROM statistics WHERE metric = %s", (metric,))
             else:
@@ -401,11 +398,28 @@ class Database:
 
     def get_health_summary(self) -> Dict[str, Any]:
         with self.get_connection() as conn:
-            cursor = conn.cursor()
+            cursor = self._cursor(conn)
             cursor.execute("SELECT COUNT(*) as count FROM queue_items")
             row = cursor.fetchone()
             queued = row["count"] if row else 0
             return {"queued": queued}
+
+    def get_expired_queues(self, timeout: int) -> List[Any]:
+        """Finds queues/chat owners whose items have exceeded the flush timeout"""
+        with self.get_connection() as conn:
+            cursor = self._cursor(conn)
+            if self.use_postgres:
+                cursor.execute(
+                    "SELECT DISTINCT chat_id FROM queue_items WHERE added_at < CURRENT_TIMESTAMP - INTERVAL '%s seconds'",
+                    (f"{timeout}",)
+                )
+            else:
+                cursor.execute(
+                    "SELECT DISTINCT chat_id FROM queue_items WHERE datetime(added_at) <= datetime('now', ?)",
+                    (f"-{timeout} seconds",)
+                )
+            rows = cursor.fetchall()
+            return [row["chat_id"] for row in rows]
 
 
 db = Database()
