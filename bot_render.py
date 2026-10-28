@@ -653,7 +653,18 @@ async def search_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         kind = item["type"]
         detail = f"\n• Duration: {format_duration(item['duration'])}" if kind == "video" else ""
         text = f"📁 <b>{item.get('label') or kind.title()}</b>{detail}\n• Size: {format_size(item['file_size'])}\n• Status: {item['status']}\n• ID: <code>{item['unique_id']}</code>"
-        kb = InlineKeyboardMarkup([[InlineKeyboardButton("⭐ Toggle favorite", callback_data=f"favorite:{kind}:{item['unique_id']}")]])
+        
+kb = InlineKeyboardMarkup([[
+    InlineKeyboardButton(
+        "▶️ Open / Send",
+        callback_data=f"playfav:{kind}:{item['unique_id']}"
+    ),
+    InlineKeyboardButton(
+        "⭐ Toggle favorite",
+        callback_data=f"favorite:{kind}:{item['unique_id']}"
+    )
+]])
+
         await update.effective_message.reply_text(text, parse_mode="HTML", reply_markup=kb)
 
 @admin_only
