@@ -636,36 +636,65 @@ async def queue_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     else:
         await update.effective_message.reply_text(text, parse_mode="HTML", reply_markup=get_queue_keyboard())
 
+
 @admin_only
 async def search_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = " ".join(context.args).strip()
+
     if not query:
-        await update.effective_message.reply_text("🔎 Send a search term, ID fragment, duration, or file size. Example: /search 120")
+        await update.effective_message.reply_text(
+            "🔎 Send a search term, ID fragment, duration, or file size. Example: /search 120"
+        )
         return
+
     if not DATABASE_ENABLED:
-        await update.effective_message.reply_text("Search needs the database enabled.")
+        await update.effective_message.reply_text(
+            "Search needs the database enabled."
+        )
         return
-    results = db.search_saved_files(update.effective_user.id, query, limit=10)
+
+    results = db.search_saved_files(
+        update.effective_user.id, query, limit=10
+    )
+
     if not results:
-        await update.effective_message.reply_text("No saved videos matched that search.")
+        await update.effective_message.reply_text(
+            "No saved videos matched that search."
+        )
         return
+
     for item in results:
         kind = item["type"]
-        detail = f"\n• Duration: {format_duration(item['duration'])}" if kind == "video" else ""
-        text = f"📁 <b>{item.get('label') or kind.title()}</b>{detail}\n• Size: {format_size(item['file_size'])}\n• Status: {item['status']}\n• ID: <code>{item['unique_id']}</code>"
-        
-kb = InlineKeyboardMarkup([[
-    InlineKeyboardButton(
-        "▶️ Open / Send",
-        callback_data=f"playfav:{kind}:{item['unique_id']}"
-    ),
-    InlineKeyboardButton(
-        "⭐ Toggle favorite",
-        callback_data=f"favorite:{kind}:{item['unique_id']}"
-    )
-]])
 
-        await update.effective_message.reply_text(text, parse_mode="HTML", reply_markup=kb")
+        detail = (
+            f"\n• Duration: {format_duration(item['duration'])}"
+            if kind == "video"
+            else ""
+        )
+
+        text = (
+            f"📁 <b>{item.get('label') or kind.title()}</b>{detail}\n"
+            f"• Size: {format_size(item['file_size'])}\n"
+            f"• Status: {item['status']}\n"
+            f"• ID: <code>{item['unique_id']}</code>"
+        )
+
+        kb = InlineKeyboardMarkup([[
+            InlineKeyboardButton(
+                "▶️ Open / Send",
+                callback_data=f"playfav:{kind}:{item['unique_id']}"
+            ),
+            InlineKeyboardButton(
+                "⭐ Toggle favorite",
+                callback_data=f"favorite:{kind}:{item['unique_id']}"
+            )
+        ]])
+
+        await update.effective_message.reply_text(
+            text,
+            parse_mode="HTML",
+            reply_markup=kb
+        )
 
 @admin_only
 async def favorites_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
