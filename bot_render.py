@@ -47,6 +47,7 @@ logging.basicConfig(
     ]
 )
 logger = logging.getLogger(__name__)
+QUEUE_SEND_LOCK = asyncio.Lock()
 
 PORT = int(os.environ.get("PORT", 10000))
 WEBHOOK_URL = os.environ.get("RENDER_EXTERNAL_URL", os.environ.get("WEBHOOK_URL", ""))
@@ -963,69 +964,55 @@ async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if DATABASE_ENABLED:
             db.increment_stat("total_documents")
 
-async def send_album(update: Update, context: ContextTypes.DEFAULT_TYPE) -> bool:
-    chat_id = update.effective_chat.id if update and update.effective_chat else None
-    user_id = update.effective_user.id if update and update.effective_user else None
-    if DATABASE_ENABLED and chat_id is not None and user_id is not None:
-        records = db.get_queue(chat_id, user_id)
-        album = [VideoInfo(file_id=r["file_id"], file_unique_id=r["file_unique_id"], file_size=int(r.get("file_size") or 0), duration=int(r.get("duration") or 0), width=int(r.get("width") or 0), height=int(r.get("height") or 0), timestamp=time.time(), checksum=r.get("checksum") or "") for r in records[:10]]
-    else:
-        album = list(context.user_data.get("album", []))[:10]
-    if not album:
-        return False
-
-    strip = settings.get(ConfigKeys.STRIP_METADATA, True)
-    auto_caption = settings.get(ConfigKeys.AUTO_CAPTION_MODE, False)
-    template = settings.get(ConfigKeys.CAPTION_TEMPLATE, "")
-    try:
-        if len(album) == 1:
-            v = album[0]
-            caption = None
-            if not strip and auto_caption:
-                caption = template.format(index=1,total=1,duration=format_duration(v.duration),size=format_size(v.file_size)) if template else "📹 1/1"
-            await context.bot.send_video(chat_id=chat_id, video=v.file_id, caption=caption)
-        else:
-            media_group = []
-            for idx, v in enumerate(album):
-                caption = None
-                if not strip and auto_caption:
-                    caption = template.format(index=idx+1,total=len(album),duration=format_duration(v.duration),size=format_size(v.file_size)) if template else f"📹 {idx+1}/{len(album)}"
-                media_group.append(InputMediaVideo(media=v.file_id, caption=caption))
-            await context.bot.send_media_group(chat_id=chat_id, media=media_group)
-        if DATABASE_ENABLED:
-            db.remove_queue_items(chat_id, user_id, [v.file_unique_id for v in album])
-            if len(album) > 1: db.increment_stat("total_batches")
-            for v in album: db.mark_video_sent(v.file_unique_id)
-        else:
-            context.user_data["album"] = context.user_data.get("album", [])[len(album):]
-        return True
-    except RetryAfter as exc:
-        logger.warning("Telegram rate limited queue send: %s", exc)
-        await asyncio.sleep(float(exc.retry_after) + 1)
-    except (TimedOut, TelegramError) as exc:
-        logger.error("Queue send failed; retaining items for retry: %s", exc)
-    except Exception:
-        logger.exception("Unexpected queue send failure; retaining items for retry")
-    return False
 
 async def send_album_to_chat(app, chat_id, user_id, album: List[Dict[str, Any]]):
-    if not album:
-        return False
-    try:
-        items = album[:10]
-        if len(items) == 1:
-            await app.bot.send_video(chat_id=chat_id, video=items[0]["file_id"])
-        else:
-            media = [InputMediaVideo(media=v["file_id"]) for v in items]
-            await app.bot.send_media_group(chat_id=chat_id, media=media)
+    async with QUEUE_SEND_LOCK:
+        # Re-read the queue after acquiring the lock.
+        # Never send a stale batch fetched by another watcher.
         if DATABASE_ENABLED:
-            db.remove_queue_items(chat_id, user_id, [v["file_unique_id"] for v in items])
-            if len(items) > 1: db.increment_stat("total_batches")
-            for v in items: db.mark_video_sent(v["file_unique_id"])
-        return True
-    except Exception as exc:
-        logger.error("Auto-send failed; queue retained for retry: %s", exc)
-        return False
+            current_queue = db.get_queue(chat_id, user_id)
+            items = current_queue[:10]
+        else:
+            items = album[:10]
+
+        if not items:
+            return False
+
+        try:
+            if len(items) == 1:
+                await app.bot.send_video(
+                    chat_id=chat_id,
+                    video=items[0]["file_id"],
+                )
+            else:
+                media = [
+                    InputMediaVideo(media=v["file_id"])
+                    for v in items
+                ]
+                await app.bot.send_media_group(
+                    chat_id=chat_id,
+                    media=media,
+                )
+
+            if DATABASE_ENABLED:
+                db.remove_queue_items(
+                    chat_id,
+                    user_id,
+                    [v["file_unique_id"] for v in items],
+                )
+                if len(items) > 1:
+                    db.increment_stat("total_batches")
+                for item in items:
+                    db.mark_video_sent(item["file_unique_id"])
+
+            return True
+
+        except Exception as exc:
+            logger.error(
+                "Auto-send failed; queue retained for retry: %s", exc
+            )
+            return False
+
 
 @admin_only
 async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
