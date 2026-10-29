@@ -26,7 +26,7 @@ from telegram.ext import Application, ApplicationBuilder, CallbackQueryHandler, 
 from threading import Thread
 from dotenv import load_dotenv
 from database import db
-
+import flask from Flask
 ealth_app = Flask(__name__)
 
 @health_app.get("/")
