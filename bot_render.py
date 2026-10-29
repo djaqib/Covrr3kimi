@@ -600,12 +600,6 @@ def main():
         logger.exception("Bot startup or runtime failed")
         raise
 
+
 if __name__ == "__main__":
-  # PORT will pick up Render's assigned port (defaulting to 10000)
-  port = int(os.environ.get("PORT", 10000))
-
-  logger.info(f"Starting Flask health server on port {port}...")
-
-  # This binds Flask to 0.0.0.0 and port 10000 so Render and UptimeRobot can reach it
-  health_app.run(host="0.0.0.0", port=port)
-  main()
+    main()
