@@ -25,22 +25,9 @@ from telegram.error import RetryAfter, TelegramError, TimedOut, NetworkError
 from telegram.ext import Application, ApplicationBuilder, CallbackQueryHandler, CommandHandler, ContextTypes, MessageHandler, filters
 from threading import Thread
 from dotenv import load_dotenv
-from flask import Flask
 from database import db
 
-from telegram import (
-    BotCommand, InlineKeyboardButton, InlineKeyboardMarkup,
-    InputMediaPhoto, InputMediaVideo, Update,
-)
-from telegram.constants import ParseMode
-from telegram.error import BadRequest, RetryAfter, TelegramError
-from telegram.ext import (
-    ApplicationBuilder, CallbackQueryHandler, CommandHandler,
-    ContextTypes, MessageHandler, filters,
-)
-
-
-health_app = Flask(__name__)
+ealth_app = Flask(__name__)
 
 @health_app.get("/")
 @health_app.get("/health")
