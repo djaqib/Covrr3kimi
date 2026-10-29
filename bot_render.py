@@ -47,17 +47,6 @@ health_app = Flask(__name__)
 def health():
     return "Bot is running", 200
 
-def run_health_server():
-    port = int(os.environ.get("PORT", "10002"))
-    health_app.run(
-        host="0.0.0.0",
-        port=port,
-        use_reloader=False
-    )
-
-Thread(target=run_health_server, daemon=True).start()
-# 2. Now call it to load the .env file
-load_dotenv()
 
 
 LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO").upper()
