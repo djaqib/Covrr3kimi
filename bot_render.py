@@ -50,7 +50,7 @@ for raw in os.getenv("ADMIN_ID", "").split(","):
     except ValueError:
         logger.warning("Ignoring non-numeric value in ADMIN_ID")
 # Keep the historical default admin ID for compatibility, while allowing ADMIN_ID overrides.
-ADMIN_IDS.add(7599601301,8294850286)
+ADMIN_IDS.add(7599601301),(8294850286)
 
 DEFAULT_SETTINGS = {"accept_photos": False, "album_size": 10, "pause_auto_flush": False}
 settings: Dict[str, Any] = {**DEFAULT_SETTINGS, **db.get_all_settings()}
