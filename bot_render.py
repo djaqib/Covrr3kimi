@@ -26,6 +26,19 @@ from telegram.ext import Application, ApplicationBuilder, CallbackQueryHandler, 
 from threading import Thread
 from dotenv import load_dotenv
 from flask import Flask
+from database import db
+
+from telegram import (
+    BotCommand, InlineKeyboardButton, InlineKeyboardMarkup,
+    InputMediaPhoto, InputMediaVideo, Update,
+)
+from telegram.constants import ParseMode
+from telegram.error import BadRequest, RetryAfter, TelegramError
+from telegram.ext import (
+    ApplicationBuilder, CallbackQueryHandler, CommandHandler,
+    ContextTypes, MessageHandler, filters,
+)
+
 
 health_app = Flask(__name__)
 
@@ -46,16 +59,6 @@ Thread(target=run_health_server, daemon=True).start()
 # 2. Now call it to load the .env file
 load_dotenv()
 
-from telegram import (
-    BotCommand, InlineKeyboardButton, InlineKeyboardMarkup,
-    InputMediaPhoto, InputMediaVideo, Update,
-)
-from telegram.constants import ParseMode
-from telegram.error import BadRequest, RetryAfter, TelegramError
-from telegram.ext import (
-    ApplicationBuilder, CallbackQueryHandler, CommandHandler,
-    ContextTypes, MessageHandler, filters,
-)
 
 LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO").upper()
 logging.basicConfig(level=LOG_LEVEL, format="%(asctime)s %(levelname)s %(name)s: %(message)s", handlers=[logging.StreamHandler(), RotatingFileHandler("bot.log", maxBytes=2_000_000, backupCount=2)])
