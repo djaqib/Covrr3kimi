@@ -24,6 +24,7 @@ from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, InputMe
 from telegram.error import RetryAfter, TelegramError, TimedOut, NetworkError
 from telegram.ext import Application, ApplicationBuilder, CallbackQueryHandler, CommandHandler, ContextTypes, MessageHandler, filters
 from threading import Thread
+from dotenv import load_dotenv
 from flask import Flask
 
 health_app = Flask(__name__)
