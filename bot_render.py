@@ -20,12 +20,41 @@ import shlex
 from datetime import timedelta
 from logging.handlers import RotatingFileHandler
 from typing import Any, Dict, List
-
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, InputMediaVideo, BotCommand
 from telegram.error import RetryAfter, TelegramError, TimedOut, NetworkError
 from telegram.ext import Application, ApplicationBuilder, CallbackQueryHandler, CommandHandler, ContextTypes, MessageHandler, filters
+from threading import Thread
+from flask import Flask
 
-from database import db
+health_app = Flask(__name__)
+
+@health_app.get("/")
+@health_app.get("/health")
+def health():
+    return "Bot is running", 200
+
+def run_health_server():
+    port = int(os.environ.get("PORT", "10000"))
+    health_app.run(
+        host="0.0.0.0",
+        port=port,
+        use_reloader=False
+    )
+
+Thread(target=run_health_server, daemon=True).start()
+# 2. Now call it to load the .env file
+load_dotenv()
+
+from telegram import (
+    BotCommand, InlineKeyboardButton, InlineKeyboardMarkup,
+    InputMediaPhoto, InputMediaVideo, Update,
+)
+from telegram.constants import ParseMode
+from telegram.error import BadRequest, RetryAfter, TelegramError
+from telegram.ext import (
+    ApplicationBuilder, CallbackQueryHandler, CommandHandler,
+    ContextTypes, MessageHandler, filters,
+)
 
 LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO").upper()
 logging.basicConfig(level=LOG_LEVEL, format="%(asctime)s %(levelname)s %(name)s: %(message)s", handlers=[logging.StreamHandler(), RotatingFileHandler("bot.log", maxBytes=2_000_000, backupCount=2)])
