@@ -43,14 +43,19 @@ BOT_TOKEN = os.getenv("BOT_TOKEN", "").strip()
 PORT = int(os.getenv("PORT", "10000"))
 RENDER_URL = os.getenv("RENDER_EXTERNAL_URL", "").rstrip("/")
 WEBHOOK_SECRET = os.getenv("WEBHOOK_SECRET", "").strip()
+
 ADMIN_IDS = set()
-for raw in os.getenv("ADMIN_ID", "").split(","):
+
+# Fixed: Now correctly uses "ADMIN_IDS" to match your Render dashboard setting
+for raw in os.getenv("ADMIN_IDS", "").split(","):
     try:
-        if raw.strip(): ADMIN_IDS.add(int(raw.strip()))
+        if raw.strip(): 
+            ADMIN_IDS.add(int(raw.strip()))
     except ValueError:
-        logger.warning("Ignoring non-numeric value in ADMIN_ID")
-# Keep the historical default admin ID for compatibility, while allowing ADMIN_ID overrides.
-ADMIN_IDS.add(7599601301),(8294850286)
+        logger.warning("Ignoring non-numeric value in ADMIN_IDS")
+
+# Fixed: Use .update() or separate .add() calls to include your default IDs safely
+ADMIN_IDS.update({7599601301, 8294850286})
 
 DEFAULT_SETTINGS = {"accept_photos": False, "album_size": 10, "pause_auto_flush": False}
 settings: Dict[str, Any] = {**DEFAULT_SETTINGS, **db.get_all_settings()}
@@ -78,6 +83,7 @@ async def admin_command(func):
                 await update.effective_message.reply_text("⚠️ Something went wrong. The error was logged without exposing private credentials.")
     wrapper.__name__ = func.__name__
     return wrapper
+
 
 def fmt_size(n: int) -> str:
     size = float(n or 0)
