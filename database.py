@@ -580,15 +580,6 @@ class Database:
             "captions": [dict(r) if isinstance(r, dict) else dict(zip(["file_unique_id","caption"], r)) for r in caps],
         }
 
-    def get_recent_videos(self, limit: int = 10) -> List[Dict[str, Any]]:
-        """Return the most recently added videos (newest first)."""
-        with self.get_connection() as conn:
-            cur = self._cursor(conn)
-            cur.execute(self._sql("SELECT file_id,file_unique_id,file_size,duration,width,height,status,created_at FROM videos ORDER BY id DESC LIMIT ?"), (max(1, min(int(limit), 50)),))
-            rows = cur.fetchall()
-            cur.close()
-        keys = ["file_id", "file_unique_id", "file_size", "duration", "width", "height", "status", "created_at"]
-        return [dict(r) if isinstance(r, dict) else dict(zip(keys, r)) for r in rows]
 
     def get_recent_photos(self, limit: int = 5) -> List[Dict[str, Any]]:
         """Return the most recently added photos (newest first)."""
