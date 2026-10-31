@@ -1,172 +1,124 @@
-# Enhanced Telegram Bot with PostgreSQL
+# Video Vault — Shared-Library Telegram Bot
+
+A private, admin-only Telegram bot that acts as a **shared media library**:
+all admin accounts access the SAME library of videos and photos. Add files
+from one account, tag and search them, and pull them back from any other
+account.
 
 ## Features
 
-✅ **PostgreSQL Database Storage** - All data persisted in PostgreSQL (with SQLite fallback)
-✅ **Admin Management** - Add/remove admins via commands or database
-✅ **Strip Metadata** - Remove sender names and captions by default
-✅ **Photo Controls** - Accept/ignore photos with optional approval mode
-✅ **Document Controls** - Accept/ignore files with optional approval mode
-✅ **Persistent Settings** - All settings survive bot restarts
-✅ **Duplicate Detection** - Content-based checksum verification
-✅ **Batch Processing** - Auto-group videos into albums
+- **Shared library across accounts** — all admins see and share one library
+- **PostgreSQL/Supabase storage** (SQLite fallback for local dev)
+- **Smart search** — by duration, size, ID, tag, or favorites
+- **Tags & captions** — organize videos with tags and custom captions
+- **Favorites** — per-user favorites with star toggle
+- **Random pick** — `/random` or `/random <tag>` for discovery
+- **Auto-flush** — queued videos are sent automatically every N seconds
+- **Batch sending** — videos grouped into albums of up to 10
+- **Duplicate detection** — skipped automatically
+- **Admin management** — `/addadmin`, `/removeadmin`, `/listadmins` at runtime
+- **Export** — `/export` downloads a full JSON backup
+- **Delete** — `/delete <uid>` removes videos from the library
+- **Photo support** — optional, toggleable in settings
 
 ## Quick Start
 
-### 1. Install Dependencies
+### 1. Install
 
 ```bash
 pip install -r requirements.txt
 ```
 
-### 2. Set Environment Variables
+### 2. Environment variables
 
 ```bash
-export BOT_TOKEN="your_telegram_bot_token"
-export DATABASE_URL="postgresql://user:password@host:port/database"  # Optional
+export BOT_TOKEN="your_telegram_bot_token"           # required, from @BotFather
+export ADMIN_IDS="123456789,987654321"               # required, comma-separated Telegram user IDs
+export DATABASE_URL="postgresql://user:pass@host/db" # optional, Supabase/PostgreSQL
 ```
 
-### 3. Run the Bot
+### 3. Run
 
 ```bash
-python bot_enhanced.py
+python bot_render.py
 ```
-
-## Database Setup
-
-### PostgreSQL (Recommended)
-
-1. Create a PostgreSQL database:
-```sql
-CREATE DATABASE telegram_bot;
-```
-
-2. Set the connection URL:
-```bash
-export DATABASE_URL="postgresql://username:password@localhost:5432/telegram_bot"
-```
-
-### SQLite (Fallback)
-
-If no DATABASE_URL is provided, the bot automatically uses SQLite.
 
 ## Commands
 
-### Admin Management
-- `/addadmin <user_id>` - Add a new admin
-- `/removeadmin <user_id>` - Remove an admin
-- `/listadmins` - List all admins
+| Command | Description |
+|---|---|
+| /start, /menu | Open the bot menu |
+| /finish | Send remaining queued videos |
+| /search <query> | Smart search (see below) |
+| /random [tag] | Send a random video |
+| /tags | List all tags |
+| /tag <uid> <tag> | Tag a video |
+| /untag <uid> <tag> | Remove a tag |
+| /caption <uid> <text> | Set a custom caption |
+| /favorites | Your favorited videos |
+| /delete <uid> | Permanently delete a video |
+| /export | Download library backup (JSON) |
+| /addadmin <id> | Add an admin |
+| /removeadmin <id> | Remove an admin |
+| /listadmins | List admins |
+| /stats | Statistics |
+| /settings | Toggles (photos, auto-send, strip names) |
+| /help | Help |
 
-### Media Settings
-- `/toggle_photos` - Enable/disable photo acceptance
-- `/toggle_documents` - Enable/disable document acceptance
-- `/toggle_photo_approval` - Enable/disable photo approval mode
-- `/toggle_doc_approval` - Enable/disable document approval mode
-- `/toggle_strip` - Enable/disable metadata stripping
+## Search examples
 
-### Configuration
-- `/settings` - Open settings menu
-- `/set_timeout <seconds>` - Set batch timeout
-- `/set_album_size <1-10>` - Set album size
-- `/toggle_caption` - Toggle auto-captions
-- `/set_caption <text>` - Set caption template
+```
+/search 180                           # at least 180 seconds
+/search --exact-duration 180          # exactly 180 seconds
+/search --min-duration 600            # at least 10 minutes
+/search --min-size 10 --max-size 100  # size range in MiB
+/search --tag workout                 # by tag
+/search --favorites                   # only your favorites
+/search abc                           # match IDs
+/search --tag workout --min-size 20   # combined
+```
 
-### Media Control
-- `/approve` - Approve pending media
-- `/reject` - Reject pending media
-- `/flush` - Send pending videos immediately
-- `/clear` - Clear queue
-
-### Information
-- `/stats` - View statistics
-- `/dbinfo` - Database information
-- `/export` - Export data to file
-
-## Default Settings
+## Settings (stored in database)
 
 | Setting | Default | Description |
-|---------|---------|-------------|
-| Strip Metadata | ON | Remove sender names and captions |
-| Accept Photos | ON | Process incoming photos |
-| Accept Documents | OFF | Ignore documents by default |
-| Photo Approval | OFF | Auto-approve photos |
-| Document Approval | OFF | Auto-approve documents |
-| Batch Timeout | 60s | Time before flushing videos |
-| Album Size | 10 | Videos per album |
-
-## Environment Variables
-
-| Variable | Required | Description |
-|----------|----------|-------------|
-| BOT_TOKEN | Yes | Telegram bot token from @BotFather |
-| DATABASE_URL | No | PostgreSQL connection string |
-
-## File Structure
-
-```
-├── bot_enhanced.py      # Main bot file
-├── database.py          # Database module
-├── requirements.txt     # Python dependencies
-├── bot_settings.json    # Settings backup (auto-created)
-├── bot_database.db      # SQLite database (if no PostgreSQL)
-└── bot.log             # Log file (auto-created)
-```
+|---|---|---|
+| accept_photos | OFF | Save incoming photos |
+| pause_auto_flush | OFF | Pause auto-sending |
+| strip_metadata | ON | Strip uploader names |
+| auto_flush_seconds | 120 | Auto-flush interval |
+| album_size | 10 | Videos per album |
 
 ## Deployment
 
-### Railway
+### Render (recommended)
 
-1. Add PostgreSQL plugin to your Railway project
-2. Set BOT_TOKEN environment variable
-3. Deploy - DATABASE_URL is auto-configured
+1. New Web Service from this repo
+2. Set env vars: `BOT_TOKEN`, `ADMIN_IDS`, and (recommended) `DATABASE_URL` from Supabase
+3. Render provides `RENDER_EXTERNAL_URL` and `PORT` automatically (webhook mode)
 
-### Heroku
+### Railway / Heroku
 
-1. Add Heroku Postgres add-on
-2. Set BOT_TOKEN config var
-3. Deploy - DATABASE_URL is auto-configured
+Same env vars; `DATABASE_URL` is auto-configured if you add their Postgres plugin.
 
-### Local/VPS
+### Local
 
-```bash
-# Install PostgreSQL
-sudo apt install postgresql
+Without `RENDER_EXTERNAL_URL` the bot runs in long-polling mode. Without
+`DATABASE_URL` it uses a local SQLite file (`bot_database.db`).
 
-# Create database
-sudo -u postgres createdb telegram_bot
+## File structure
 
-# Set environment variables
-export BOT_TOKEN="your_token"
-export DATABASE_URL="postgresql://postgres:password@localhost/telegram_bot"
-
-# Run
-python bot_enhanced.py
+```
+├── bot_render.py      # Main bot (webhook + polling)
+├── database.py        # PostgreSQL/SQLite layer
+├── requirements.txt
+├── runtime.txt
+├── bot.log            # auto-created
+└── bot_database.db    # auto-created (SQLite mode only)
 ```
 
-## Security Notes
+## Security notes
 
-- Only users in the admin list can use the bot
-- Default admin ID: 7599601301 (change in code or add via /addadmin)
-- All settings are stored securely in the database
-- Media files are not stored, only metadata
-
-## Troubleshooting
-
-**Bot won't start:**
-- Check BOT_TOKEN is set correctly
-- Verify database connection if using PostgreSQL
-
-**Settings not persisting:**
-- Check database permissions
-- Look for errors in bot.log
-
-**Database errors:**
-- The bot falls back to SQLite if PostgreSQL fails
-- Check DATABASE_URL format: `postgresql://user:pass@host:port/db`
-
-## Support
-
-For issues or feature requests, check the bot logs first:
-```bash
-tail -f bot.log
-```
+- Only IDs in `ADMIN_IDS` can use the bot
+- There are **no hardcoded admin IDs** — set them via the env var
+- Admins can be added/removed at runtime with `/addadmin` / `/removeadmin`
+- Media files are not stored, only Telegram file IDs and metadata
