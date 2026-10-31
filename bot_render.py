@@ -64,11 +64,11 @@ flush_locks: set[tuple] = set()
 SCAN_LOCKS: set[int] = set()
 
 # Page sizes
-SEARCH_PAGE_SIZE = 5     # search results per page (sent as cards)
-SEND_PAGE_SIZE = 20      # videos per page for library-wide sends
-RECENT_COUNT = 40        # /recent page size
-CLEAN_CONCURRENCY = 6    # parallel get_file probes during /clean
-CLEAN_CHUNK = 60         # items between progress updates
+SEARCH_PAGE_SIZE = 10      # search results per page (sent as cards)
+SEND_PAGE_SIZE = 20        # videos per page for library-wide sends
+RECENT_COUNT = 40          # /recent page size
+CLEAN_CONCURRENCY = 6      # parallel get_file probes during /clean
+CLEAN_CHUNK = 60           # items between progress updates
 
 
 def is_admin(update: Update) -> bool:
@@ -111,12 +111,13 @@ def main_keyboard() -> InlineKeyboardMarkup:
         [InlineKeyboardButton("🔎 Search", callback_data="search_help"),
          InlineKeyboardButton("🎲 Random", callback_data="random")],
         [InlineKeyboardButton("🕒 Recent", callback_data="recent"),
-         InlineKeyboardButton("🧹 Clean DB", callback_data="clean")],
-        [InlineKeyboardButton("🏷 Tags", callback_data="tags"),
-         InlineKeyboardButton("⭐ Favorites", callback_data="favorites")],
-        [InlineKeyboardButton("📊 Stats", callback_data="stats"),
-         InlineKeyboardButton("⚙️ Settings", callback_data="settings")],
-        [InlineKeyboardButton("❔ Help", callback_data="help")],
+         InlineKeyboardButton("♻️ Duplicates", callback_data="duplicates")],
+        [InlineKeyboardButton("🧹 Clean DB", callback_data="clean"),
+         InlineKeyboardButton("🏷 Tags", callback_data="tags")],
+        [InlineKeyboardButton("⭐ Favorites", callback_data="favorites"),
+         InlineKeyboardButton("📊 Stats", callback_data="stats")],
+        [InlineKeyboardButton("⚙️ Settings", callback_data="settings"),
+         InlineKeyboardButton("❔ Help", callback_data="help")],
     ])
 
 
@@ -139,6 +140,18 @@ def video_result_keyboard(uid: str, favorite: bool) -> InlineKeyboardMarkup:
         [InlineKeyboardButton("🏷 Tag", callback_data=f"tag:{uid}"),
          InlineKeyboardButton("✏️ Caption", callback_data=f"caption:{uid}")],
         [InlineKeyboardButton("🗑 Delete", callback_data=f"del:{uid}")],
+    ])
+
+
+def sent_video_keyboard(uid: str, favorite: bool, user_id: int) -> InlineKeyboardMarkup:
+    """Keyboard attached under a video the bot just sent (random / send-one / pager).
+
+    Includes a Favorite toggle and a Delete button. The user_id embedded in the
+    fav callback lets each admin keep their own favorite state."""
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton("⭐ Unfavorite" if favorite else "⭐ Favorite",
+                              callback_data=f"favsent:{uid}:{user_id}")],
+        [InlineKeyboardButton("🗑 Delete from library", callback_data=f"delsent:{uid}")],
     ])
 
 
@@ -178,6 +191,39 @@ async def _fetch_pager_items(pager: Dict[str, Any]) -> List[Dict[str, Any]]:
     return []
 
 
+async def _send_pager_page(update: Update, context: ContextTypes.DEFAULT_TYPE,
+                           pager: Dict[str, Any], items: List[Dict[str, Any]]) -> tuple:
+    """Send one page of media. Returns (sent_ids, failed_ids)."""
+    chat_id = update.effective_chat.id
+    user_id = update.effective_user.id
+    sent_ids: List[str] = []
+    failed_ids: List[str] = []
+    for offset in range(0, len(items), 10):
+        batch = items[offset:offset + 10]
+        try:
+            if len(batch) == 1:
+                item = batch[0]
+                fav = db.is_favorite(user_id, item["file_unique_id"])
+                await context.bot.send_video(chat_id=chat_id, video=item["file_id"],
+                                             caption=db.get_caption(item["file_unique_id"]),
+                                             reply_markup=sent_video_keyboard(item["file_unique_id"], fav, user_id))
+            else:
+                media = [InputMediaVideo(media=x["file_id"]) for x in batch]
+                await context.bot.send_media_group(chat_id=chat_id, media=media)
+            sent_ids.extend(x["file_unique_id"] for x in batch)
+        except RetryAfter as exc:
+            await asyncio.sleep(float(exc.retry_after) + 1)
+            s, f = await _send_singles(context.bot, chat_id, batch)
+            sent_ids.extend(s); failed_ids.extend(f)
+        except TelegramError:
+            logger.exception("Telegram failed to send a batch of %d videos", len(batch))
+            s, f = await _send_singles(context.bot, chat_id, batch)
+            sent_ids.extend(s); failed_ids.extend(f)
+        if offset + 10 < len(items):
+            await asyncio.sleep(1)
+    return sent_ids, failed_ids
+
+
 async def pager_next(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     pager = context.chat_data.get("pager")
@@ -200,7 +246,7 @@ async def pager_next(update: Update, context: ContextTypes.DEFAULT_TYPE):
             for item in items:
                 await _send_search_result(update, context, item)
         else:
-            sent, failed = await _send_video_batches(context.bot, update.effective_chat.id, items)
+            sent, failed = await _send_pager_page(update, context, pager, items)
             for uid in sent:
                 db.mark_video_sent(uid)
             if sent:
@@ -246,6 +292,7 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "/search &lt;query&gt; — smart search (see below)\n"
         "/random [tag] — send a random video\n"
         "/recent — send the 40 most recent videos\n"
+        "/duplicates — find identical videos and remove copies\n"
         "/clean — scan DB for dead files, then remove them\n"
         "/tags — list all tags\n"
         "/tag &lt;uid&gt; &lt;tag&gt; — tag a video\n"
@@ -609,7 +656,7 @@ async def search_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 # ---------------------------------------------------------------------------
-# Recent / random / tags / captions / favorites / delete
+# Recent / random / duplicates / tags / captions / favorites / delete
 # ---------------------------------------------------------------------------
 async def recent_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Send the RECENT_COUNT most recent videos, paginated if the library is larger."""
@@ -625,19 +672,48 @@ async def recent_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.effective_message.reply_text("No videos yet.")
         return
     status = await update.effective_message.reply_text(f"🕒 Sending the {len(items)} most recent videos…")
-    sent, failed = await _send_video_batches(context.bot, chat_id, items)
+    pager = {"kind": "recent", "offset": 0, "total": total, "page_size": RECENT_COUNT,
+             "owner": (chat_id, user_id)}
+    sent, failed = await _send_pager_page(update, context, pager, items)
     for uid in sent:
         db.mark_video_sent(uid)
     if sent:
         db.increment_stat("sent_videos", len(sent))
-    pager = {"kind": "recent", "offset": len(items), "total": total, "page_size": RECENT_COUNT,
-             "owner": (chat_id, user_id)}
+    pager["offset"] = len(items)
     context.chat_data["pager"] = pager
     text = pager_text(pager) + (f"\n⚠️ {len(failed)} failed to send." if failed else "")
     try:
         await status.edit_text(text, reply_markup=pager_keyboard(pager))
     except TelegramError:
         await context.bot.send_message(chat_id=chat_id, text=text, reply_markup=pager_keyboard(pager))
+
+
+async def duplicates_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Find videos with identical checksum (same size+duration+width+height)."""
+    if not is_admin(update):
+        return await deny(update)
+    groups = db.find_duplicates()
+    if not groups:
+        await update.effective_message.reply_text("♻️ No duplicate videos found in the library.")
+        return
+    total_extra = sum(len(g) - 1 for g in groups)
+    lines = [f"♻️ <b>{len(groups)} duplicate groups</b> — {total_extra} extra copies\n"]
+    for idx, g in enumerate(groups[:15], 1):
+        m = g[0]
+        lines.append(
+            f"<b>Group {idx}</b>: {len(g)} copies — {fmt_duration(m['duration'])}, {fmt_size(m['file_size'])}")
+        for member in g:
+            keep = "✅ keep" if member is g[0] else "🗑 remove"
+            lines.append(f"  {keep} <code>{html.escape(member['file_unique_id'])}</code>")
+    if len(groups) > 15:
+        lines.append(f"…and {len(groups) - 15} more groups.")
+    lines.append(f"\nRemove all extra copies (keep oldest in each group)?")
+    context.chat_data["dup_groups"] = [[m["file_unique_id"] for m in g] for g in groups]
+    kb = InlineKeyboardMarkup([
+        [InlineKeyboardButton(f"🗑 Remove {total_extra} extra copies", callback_data="dup_clean")],
+        [InlineKeyboardButton("❌ Cancel", callback_data="menu")],
+    ])
+    await update.effective_message.reply_text("\n".join(lines), parse_mode="HTML", reply_markup=kb)
 
 
 async def tags_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -718,9 +794,11 @@ async def random_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.effective_message.reply_text("No videos found" + suffix, parse_mode="HTML")
         return
     uid = item["file_unique_id"]
+    user_id = update.effective_user.id
     try:
         await context.bot.send_video(chat_id=update.effective_chat.id, video=item["file_id"],
-                                     caption=db.get_caption(uid))
+                                     caption=db.get_caption(uid),
+                                     reply_markup=sent_video_keyboard(uid, db.is_favorite(user_id, uid), user_id))
         db.increment_stat("sent_videos")
     except TelegramError:
         logger.exception("Failed to send random video")
@@ -778,7 +856,6 @@ async def clean_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     await context.bot.get_file(item["file_id"])
                     return  # file exists on Telegram
                 except BadRequest:
-                    # Telegram no longer has this file -> dead entry.
                     (dead_photos if kind == "photo" else dead_videos).append(item["file_unique_id"])
                     return
                 except RetryAfter as exc:
@@ -937,14 +1014,15 @@ async def confirm_send_all(update: Update, context: ContextTypes.DEFAULT_TYPE):
     flush_locks.add(key)
     try:
         status = await query.edit_message_text(f"📤 Sending first {len(first)} of {total} videos…")
-        sent, failed = await _send_video_batches(context.bot, chat_id, first)
+        pager = {"kind": "all", "offset": 0, "total": total, "page_size": SEND_PAGE_SIZE,
+                 "owner": (chat_id, user_id)}
+        sent, failed = await _send_pager_page(update, context, pager, first)
         for uid in sent:
             db.mark_video_sent(uid)
         if sent:
             db.increment_stat("sent_videos", len(sent))
             db.remove_queue_items(chat_id, user_id, sent)
-        pager = {"kind": "all", "offset": len(first), "total": total, "page_size": SEND_PAGE_SIZE,
-                 "owner": (chat_id, user_id)}
+        pager["offset"] = len(first)
         context.chat_data["pager"] = pager
         text = pager_text(pager) + (f"\n⚠️ {len(failed)} failed to send." if failed else "")
         try:
@@ -1005,7 +1083,7 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "/search --exact-duration 180\n/search --min-size 10 --max-size 100 = MiB range\n"
             "/search --tag workout = by tag\n/search --favorites = your favorites\n"
             "/search abc = match IDs\n\n"
-            "Other commands: /recent, /random [tag], /tags, /favorites, /delete <uid>, /clean, /export, /addadmin <id>",
+            "Other commands: /recent, /duplicates, /random [tag], /tags, /favorites, /delete <uid>, /clean, /export, /addadmin <id>",
             reply_markup=main_keyboard())
     elif data == "send_all":
         await send_all_saved_videos(update, context)
@@ -1017,6 +1095,18 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await random_command(update, context)
     elif data == "recent":
         await recent_command(update, context)
+    elif data == "duplicates":
+        await duplicates_command(update, context)
+    elif data == "dup_clean":
+        groups = context.chat_data.pop("dup_groups", [])
+        removed = 0
+        for group in groups:
+            for uid in group[1:]:  # keep the oldest (first) member
+                if db.delete_video(uid):
+                    removed += 1
+        db.increment_stat("deleted_videos", removed)
+        await query.edit_message_text(f"🗑 Removed {removed} duplicate videos (oldest copy of each group kept).",
+                                      reply_markup=main_keyboard())
     elif data == "clean":
         await clean_command(update, context)
     elif data == "pgnext":
@@ -1041,6 +1131,52 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await tags_command(update, context)
     elif data == "favorites":
         await favorites_command(update, context)
+    elif data.startswith("favsent:"):
+        parts = data.split(":")
+        uid = parts[1]
+        kb_owner = int(parts[2]) if len(parts) > 2 else update.effective_user.id
+        item = db.get_video(uid)
+        if not item:
+            await query.answer("Video no longer in the library.", show_alert=True)
+            try:
+                await query.edit_message_reply_markup(reply_markup=None)
+            except TelegramError:
+                pass
+            return
+        now_fav = db.toggle_favorite(update.effective_user.id, uid)
+        try:
+            await query.edit_message_reply_markup(
+                reply_markup=sent_video_keyboard(uid, now_fav, kb_owner))
+        except TelegramError:
+            pass
+        await query.answer("⭐ Added to favorites" if now_fav else "Removed from favorites")
+    elif data.startswith("delsent:"):
+        uid = data.split(":", 1)[1]
+        await query.edit_message_reply_markup(
+            reply_markup=InlineKeyboardMarkup([[
+                InlineKeyboardButton("✅ Confirm delete from library", callback_data=f"delsentconfirm:{uid}"),
+                InlineKeyboardButton("❌ Cancel", callback_data=f"delsentback:{uid}"),
+            ]]))
+    elif data.startswith("delsentconfirm:"):
+        uid = data.split(":", 1)[1]
+        removed = db.delete_video(uid)
+        db.increment_stat("deleted_videos", 1 if removed else 0)
+        try:
+            await query.message.delete()
+        except TelegramError:
+            try:
+                await query.edit_message_reply_markup(reply_markup=None)
+            except TelegramError:
+                pass
+        await query.answer("🗑 Deleted from library" if removed else "Already removed")
+    elif data.startswith("delsentback:"):
+        uid = data.split(":", 1)[1]
+        user_id = update.effective_user.id
+        try:
+            await query.edit_message_reply_markup(
+                reply_markup=sent_video_keyboard(uid, db.is_favorite(user_id, uid), user_id))
+        except TelegramError:
+            pass
     elif data.startswith("favorite:"):
         uid = data.split(":", 1)[1]
         item = db.get_video(uid)
@@ -1130,13 +1266,15 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await query.edit_message_text("That media could not be found in the saved library.",
                                           reply_markup=main_keyboard())
             return
+        user_id = update.effective_user.id
         try:
             if kind == "photo":
                 await context.bot.send_photo(chat_id=update.effective_chat.id, photo=item["file_id"])
                 db.increment_stat("sent_photos")
             else:
                 await context.bot.send_video(chat_id=update.effective_chat.id, video=item["file_id"],
-                                             caption=db.get_caption(uid))
+                                             caption=db.get_caption(uid),
+                                             reply_markup=sent_video_keyboard(uid, db.is_favorite(user_id, uid), user_id))
                 db.increment_stat("sent_videos")
             await query.answer("Media sent")
         except TelegramError:
@@ -1187,6 +1325,7 @@ async def post_init(application: Application):
         BotCommand("search", "Search saved videos"),
         BotCommand("random", "Send a random video"),
         BotCommand("recent", "Send the 40 most recent videos"),
+        BotCommand("duplicates", "Find duplicate videos and remove copies"),
         BotCommand("clean", "Scan DB for dead files and remove them"),
         BotCommand("tags", "List all tags"),
         BotCommand("favorites", "Your favorited videos"),
@@ -1230,6 +1369,7 @@ async def main_async():
     application.add_handler(CommandHandler("search", search_command))
     application.add_handler(CommandHandler("random", random_command))
     application.add_handler(CommandHandler("recent", recent_command))
+    application.add_handler(CommandHandler("duplicates", duplicates_command))
     application.add_handler(CommandHandler("clean", clean_command))
     application.add_handler(CommandHandler("tags", tags_command))
     application.add_handler(CommandHandler("tag", tag_command))

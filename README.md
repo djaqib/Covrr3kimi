@@ -9,116 +9,59 @@ account.
 
 - **Shared library across accounts** — all admins see and share one library
 - **PostgreSQL/Supabase storage** (SQLite fallback for local dev)
-- **Smart search** — by duration, size, ID, tag, or favorites
-- **Tags & captions** — organize videos with tags and custom captions
-- **Favorites** — per-user favorites with star toggle
-- **Random pick** — `/random` or `/random <tag>` for discovery
-- **Auto-flush** — queued videos are sent automatically every N seconds
-- **Batch sending** — videos grouped into albums of up to 10
-- **Duplicate detection** — skipped automatically
-- **Admin management** — `/addadmin`, `/removeadmin`, `/listadmins` at runtime
+- **Smart search** — by duration, size, ID, tag, or favorites (10 per page)
+- **Tags & captions** — organize videos; captions are sent with the video
+- **Favorites** — per-user favorites; ⭐ button on search results AND on every video the bot sends you
+- **🗑 Delete button** under every sent video — removes it from the library
+- **Random pick** — `/random` or `/random <tag>`, with fav/delete buttons
+- **Recent** — `/recent` sends the 40 newest videos, paginated
+- **Duplicates** — `/duplicates` finds identical videos (same size+length) and offers to remove copies
+- **Clean DB** — `/clean` probes every file_id; dead entries (purged by Telegram) are reported and removable in one tap
+- **Pagination everywhere** — large sends page in batches with ➡️/⏹ controls
+- **Auto-flush** — queued videos sent automatically every N seconds
+- **Admin management** at runtime — `/addadmin`, `/removeadmin`, `/listadmins`
 - **Export** — `/export` downloads a full JSON backup
-- **Delete** — `/delete <uid>` removes videos from the library
-- **Photo support** — optional, toggleable in settings
 
-## Quick Start
-
-### 1. Install
+## Setup
 
 ```bash
 pip install -r requirements.txt
-```
-
-### 2. Environment variables
-
-```bash
-export BOT_TOKEN="your_telegram_bot_token"           # required, from @BotFather
-export ADMIN_IDS="123456789,987654321"               # required, comma-separated Telegram user IDs
-export DATABASE_URL="postgresql://user:pass@host/db" # optional, Supabase/PostgreSQL
-```
-
-### 3. Run
-
-```bash
+export BOT_TOKEN="your_token"            # from @BotFather
+export ADMIN_IDS="123456789,987654321"   # comma-separated Telegram user IDs
+export DATABASE_URL="postgresql://..."   # optional, Supabase/PostgreSQL
 python bot_render.py
 ```
 
 ## Commands
 
-| Command | Description |
-|---|---|
-| /start, /menu | Open the bot menu |
-| /finish | Send remaining queued videos |
-| /search <query> | Smart search (see below) |
-| /random [tag] | Send a random video |
-| /tags | List all tags |
-| /tag <uid> <tag> | Tag a video |
-| /untag <uid> <tag> | Remove a tag |
-| /caption <uid> <text> | Set a custom caption |
-| /favorites | Your favorited videos |
-| /delete <uid> | Permanently delete a video |
-| /export | Download library backup (JSON) |
-| /addadmin <id> | Add an admin |
-| /removeadmin <id> | Remove an admin |
-| /listadmins | List admins |
-| /stats | Statistics |
-| /settings | Toggles (photos, auto-send, strip names) |
-| /help | Help |
+/start /menu · /finish · /search · /random [tag] · /recent · /duplicates ·
+/clean · /tags · /tag · /untag · /caption · /favorites · /delete · /export ·
+/addadmin · /removeadmin · /listadmins · /stats · /settings · /help
 
 ## Search examples
 
 ```
 /search 180                           # at least 180 seconds
-/search --exact-duration 180          # exactly 180 seconds
-/search --min-duration 600            # at least 10 minutes
-/search --min-size 10 --max-size 100  # size range in MiB
-/search --tag workout                 # by tag
-/search --favorites                   # only your favorites
+/search --exact-duration 180
+/search --min-size 10 --max-size 100  # MiB range
+/search --tag workout
+/search --favorites
 /search abc                           # match IDs
-/search --tag workout --min-size 20   # combined
 ```
 
-## Settings (stored in database)
+## Deploy (Render)
 
-| Setting | Default | Description |
-|---|---|---|
-| accept_photos | OFF | Save incoming photos |
-| pause_auto_flush | OFF | Pause auto-sending |
-| strip_metadata | ON | Strip uploader names |
-| auto_flush_seconds | 120 | Auto-flush interval |
-| album_size | 10 | Videos per album |
-
-## Deployment
-
-### Render (recommended)
-
-1. New Web Service from this repo
-2. Set env vars: `BOT_TOKEN`, `ADMIN_IDS`, and (recommended) `DATABASE_URL` from Supabase
-3. Render provides `RENDER_EXTERNAL_URL` and `PORT` automatically (webhook mode)
-
-### Railway / Heroku
-
-Same env vars; `DATABASE_URL` is auto-configured if you add their Postgres plugin.
-
-### Local
-
-Without `RENDER_EXTERNAL_URL` the bot runs in long-polling mode. Without
-`DATABASE_URL` it uses a local SQLite file (`bot_database.db`).
-
-## File structure
+New Web Service → set BOT_TOKEN, ADMIN_IDS, DATABASE_URL. Render provides
+RENDER_EXTERNAL_URL and PORT automatically (webhook mode). For periodic
+auto-flush install the job-queue extra:
 
 ```
-├── bot_render.py      # Main bot (webhook + polling)
-├── database.py        # PostgreSQL/SQLite layer
-├── requirements.txt
-├── runtime.txt
-├── bot.log            # auto-created
-└── bot_database.db    # auto-created (SQLite mode only)
+python-telegram-bot[webhooks,job-queue]==21.9
 ```
 
-## Security notes
+## Notes
 
-- Only IDs in `ADMIN_IDS` can use the bot
-- There are **no hardcoded admin IDs** — set them via the env var
-- Admins can be added/removed at runtime with `/addadmin` / `/removeadmin`
-- Media files are not stored, only Telegram file IDs and metadata
+- Only IDs in ADMIN_IDS can use the bot; no hardcoded IDs anywhere
+- Media files stay on Telegram; the DB stores file IDs + metadata
+- Very old unused files may be purged by Telegram — `/clean` finds those
+- `/duplicates` matches size+duration+resolution; review groups before deleting
