@@ -27,6 +27,7 @@ from telegram.error import BadRequest, RetryAfter, TelegramError
 from telegram.ext import Application, ApplicationBuilder, CallbackQueryHandler, CommandHandler, ContextTypes, MessageHandler, filters
 from dotenv import load_dotenv
 from database import db
+from database import database
 
 load_dotenv()
 
