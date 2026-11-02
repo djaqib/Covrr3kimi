@@ -5,6 +5,6 @@ WORKDIR /app
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-COPY privacy_cover_bot.py db.py ./
+COPY bot_render.py ./
 
-CMD ["python", "privacy_cover_bot.py"]
+CMD ["python", "bot._render.py"]
