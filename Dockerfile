@@ -7,4 +7,4 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 COPY bot_render.py ./
 
-CMD ["python", "bot._render.py"]
+CMD ["python", "bot_render.py"]
