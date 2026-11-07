@@ -100,6 +100,19 @@ def checksum_for(size: int, duration: int, width: int, height: int) -> str:
     return hashlib.sha256(f"{size}:{duration}:{width}:{height}".encode()).hexdigest()
 
 
+async def resolve_video_uid(update: Update, context: ContextTypes.DEFAULT_TYPE) -> str | None:
+    """Resolve a video UID from: explicit arg, replied-to video, or forwarded video.
+
+    Returns the file_unique_id, or None if nothing could be resolved."""
+    if context.args:
+        return context.args[0].strip()
+    msg = update.effective_message
+    target = msg.reply_to_message if msg and msg.reply_to_message else msg
+    if target and target.video:
+        return target.video.file_unique_id
+    return None
+
+
 # ---------------------------------------------------------------------------
 # Keyboards
 # ---------------------------------------------------------------------------
@@ -299,7 +312,7 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "/untag &lt;uid&gt; &lt;tag&gt; — remove a tag\n"
         "/caption &lt;uid&gt; &lt;text&gt; — set a custom caption\n"
         "/favorites — show your favorited videos\n"
-        "/delete &lt;uid&gt; — permanently delete a video\n"
+        "/delete — reply to a video, or forward one with /delete as caption\n"
         "/export — download library backup (JSON)\n"
         "/addadmin &lt;id&gt; /removeadmin &lt;id&gt; /listadmins — manage admins\n"
         "/stats — counts and progress\n"
@@ -474,6 +487,40 @@ async def video_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not video:
         return
     uid = video.file_unique_id
+    # Command shortcuts: forward a video with "/delete", "/tag <tag>" or "/caption <text>" as caption
+    cap = (msg.caption or "").strip()
+    if cap.startswith("/"):
+        parts = cap.split(None, 1)
+        cmd = parts[0].split("@")[0].lower()
+        arg = parts[1] if len(parts) > 1 else ""
+        if cmd == "/delete":
+            if db.video_exists(uid):
+                db.delete_video(uid)
+                db.increment_stat("deleted_videos")
+                await msg.reply_text("🗑 Video deleted from the shared library.")
+            else:
+                await msg.reply_text("That video isn't in the library.")
+            return
+        if cmd == "/tag":
+            if not arg:
+                await msg.reply_text("Usage: forward video with caption '/tag <tag>'")
+                return
+            if db.video_exists(uid):
+                db.add_tag(uid, arg)
+                await msg.reply_text(f"🏷 Tagged with '{html.escape(arg)}'.", parse_mode="HTML")
+            else:
+                await msg.reply_text("That video isn't in the library.")
+            return
+        if cmd == "/caption":
+            if not arg:
+                await msg.reply_text("Usage: forward video with caption '/caption <text>'")
+                return
+            if db.video_exists(uid):
+                db.set_caption(uid, arg)
+                await msg.reply_text("✏️ Caption saved.")
+            else:
+                await msg.reply_text("That video isn't in the library.")
+            return
     try:
         if db.video_exists(uid):
             db.increment_stat("duplicate_videos")
@@ -735,7 +782,11 @@ async def tag_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if len(context.args) < 2:
         await update.effective_message.reply_text("Usage: /tag <video_uid> <tag>")
         return
-    uid, tag = context.args[0], " ".join(context.args[1:])
+    uid = await resolve_video_uid(update, context)
+    if not uid:
+        await update.effective_message.reply_text("Couldn't find a video. Reply to one with /tag <tag>, or use /tag <uid> <tag>.")
+        return
+    tag = " ".join(context.args[1:]) if context.args and context.args[0] == uid else " ".join(context.args)
     if not db.get_video(uid):
         await update.effective_message.reply_text("Video not found in the library.")
         return
@@ -750,7 +801,11 @@ async def untag_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if len(context.args) < 2:
         await update.effective_message.reply_text("Usage: /untag <video_uid> <tag>")
         return
-    uid, tag = context.args[0], context.args[1]
+    uid = await resolve_video_uid(update, context)
+    if not uid:
+        await update.effective_message.reply_text("Couldn't find a video. Reply to one with /untag <tag>, or use /untag <uid> <tag>.")
+        return
+    tag = context.args[-1]
     if db.remove_tag(uid, tag):
         await update.effective_message.reply_text(f"Removed tag '{html.escape(tag)}'.", parse_mode="HTML")
     else:
@@ -763,8 +818,11 @@ async def caption_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if len(context.args) < 2:
         await update.effective_message.reply_text("Usage: /caption <video_uid> <text>")
         return
-    uid = context.args[0]
-    text = " ".join(context.args[1:])
+    uid = await resolve_video_uid(update, context)
+    if not uid:
+        await update.effective_message.reply_text("Couldn't find a video. Reply to one with /caption <text>, or use /caption <uid> <text>.")
+        return
+    text = " ".join(context.args[1:]) if context.args and context.args[0] == uid else " ".join(context.args)
     if not db.get_video(uid):
         await update.effective_message.reply_text("Video not found in the library.")
         return
@@ -806,17 +864,26 @@ async def random_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def delete_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Delete a video. Works three ways:
+    • /delete <uid>
+    • reply to a video with /delete
+    • forward any saved video to the bot with /delete as caption
+    """
     if not is_admin(update):
         return await deny(update)
-    if not context.args:
-        await update.effective_message.reply_text("Usage: /delete <video_uid>")
+    uid = await resolve_video_uid(update, context)
+    if not uid:
+        await update.effective_message.reply_text(
+            "Couldn't find a video to delete. Either:\n"
+            "• reply to a video with /delete\n"
+            "• forward the video with /delete as caption\n"
+            "• or use /delete <uid>")
         return
-    uid = context.args[0]
     if db.delete_video(uid):
         db.increment_stat("deleted_videos")
         await update.effective_message.reply_text("🗑 Video deleted from the shared library.")
     else:
-        await update.effective_message.reply_text("Video not found.")
+        await update.effective_message.reply_text("Video not found in the library.")
 
 
 # ---------------------------------------------------------------------------
