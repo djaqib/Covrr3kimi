@@ -1,25 +1,79 @@
-# Personal Telegram Video Vault v2
+# Video Vault — Shared-Library Telegram Bot
 
-## Deploy
-1. Choose **Python 3.11 or 3.12** in your host.
-2. Add `bot.py` and `requirements.txt` to your project.
-3. Set environment variables in your host dashboard:
-   - `BOT_TOKEN`: token from BotFather
-   - `DATABASE_URL`: PostgreSQL connection URL
-   - `ADMIN_IDS`: optional comma-separated Telegram numeric IDs; if omitted, the IDs from your original bot are used
-   - `BATCH_TIMEOUT`: optional, defaults to `60`
-   - `PGSSLMODE`: `require` for hosted PostgreSQL (default); set `disable` only if your provider explicitly requires it
-4. Start command: `python bot.py`
-5. Deploy and inspect logs if startup fails.
-
-The bot creates its PostgreSQL tables automatically. Keep tokens and database URLs out of public GitHub repositories.
+A private, admin-only Telegram bot that acts as a **shared media library**:
+all admin accounts access the SAME library of videos and photos. Add files
+from one account, tag and search them, and pull them back from any other
+account.
 
 ## Features
-Private admin checks; persistent index/settings; Telegram `file_unique_id` deduplication; button settings menu; auto/manual batch controls; groups of up to 10; safe one-video sending; timeout watcher; progress messages; search; statistics; retry; JSON index backup. Photos are ignored.
 
-## Important limitations
-- Deduplication catches repeated Telegram files using `file_unique_id`. It does not detect different uploads with identical visual content.
-- Search checks filenames and captions only.
-- Backup exports index/settings metadata, not actual video bytes.
-- All permanent state lives in PostgreSQL, so the bot service does not need a persistent local disk. Your PostgreSQL provider must retain data and have enough free-tier capacity. A free host may sleep or stop background services; code cannot override provider limits.
-- The original admin IDs are retained as defaults. You can override them with `ADMIN_IDS`.
+- **Shared library across accounts** — all admins see and share one library
+- **PostgreSQL/Supabase storage** (SQLite fallback for local dev)
+- **Smart search** — by duration, size, ID, tag, or favorites (10 per page)
+- **Tags & captions** — organize videos; captions are sent with the video
+- **Favorites** — per-user favorites; ⭐ button on search results AND on every video the bot sends you
+- **🗑 Delete button** under every sent video — removes it from the library
+- **Random pick** — `/random` or `/random <tag>`, with fav/delete buttons
+- **Recent** — `/recent` sends the 40 newest videos, paginated
+- **Duplicates** — `/duplicates` finds identical videos (same size+length) and offers to remove copies
+- **Clean DB** — `/clean` probes every file_id; dead entries (purged by Telegram) are reported and removable in one tap
+- **Pagination everywhere** — large sends page in batches with ➡️/⏹ controls
+- **Auto-flush** — queued videos sent automatically every N seconds
+- **Admin management** at runtime — `/addadmin`, `/removeadmin`, `/listadmins`
+- **Export** — `/export` downloads a full JSON backup
+
+## Setup
+
+```bash
+pip install -r requirements.txt
+export BOT_TOKEN="your_token"            # from @BotFather
+export ADMIN_IDS="123456789,987654321"   # comma-separated Telegram user IDs
+export DATABASE_URL="postgresql://..."   # optional, Supabase/PostgreSQL
+python bot_render.py
+```
+
+## Commands
+
+/start /menu · /finish · /search · /random [tag] · /recent · /duplicates ·
+/clean · /tags · /tag · /untag · /caption · /favorites · /delete · /export ·
+/addadmin · /removeadmin · /listadmins · /stats · /settings · /help
+
+## Search examples
+
+```
+/search 180                           # at least 180 seconds
+/search --exact-duration 180
+/search --min-size 10 --max-size 100  # MiB range
+/search --tag workout
+/search --favorites
+/search abc                           # match IDs
+```
+
+## Backup vault (env-based)
+
+Set `BACKUP_CHANNELS` in Render env vars to one or more channel IDs
+(comma-separated), e.g. `-1001234567890` or `-1001234567890,-1009876543210`.
+Add the bot to each channel as an **admin with post rights**. Every video or
+photo saved to the library is then mirrored to the vault channel(s) with a
+caption showing duration, size, tags and its UID — so even if Telegram purges
+files from the bot's storage, the vault copies keep them alive.
+
+The 🗄 **Vault** button in the menu shows channel status and total backed-up count.
+If the env var is empty, the bot runs normally without vault features.
+
+## Deploy (Render)
+
+New Web Service → set BOT_TOKEN, ADMIN_IDS, DATABASE_URL. Render provides
+RENDER_EXTERNAL_URL and PORT automatically (webhook mode). For periodic
+auto-flush install the job-queue extra:
+
+```
+python-telegram-bot[webhooks,job-queue]==21.9
+```
+
+## Notes
+
+- Only IDs in ADMIN_IDS can use the bot; no hardcoded IDs anywhere
+- Media files stay on Telegram; the DB stores file IDs + metadata
+- Very old unused files may be purged by Telegram — `/clean` finds those
+- `/duplicates` matches size+duration+resolution; review groups before deleting

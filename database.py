@@ -106,13 +106,27 @@ class Database:
             "CREATE TABLE IF NOT EXISTS favorites (user_id BIGINT NOT NULL, file_unique_id TEXT NOT NULL, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP, PRIMARY KEY(user_id, file_unique_id))",
             f"CREATE TABLE IF NOT EXISTS users (user_id BIGINT PRIMARY KEY, username TEXT, first_name TEXT, last_name TEXT, is_admin {bool_type} DEFAULT FALSE, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP, last_seen TIMESTAMP DEFAULT CURRENT_TIMESTAMP)",
             "CREATE TABLE IF NOT EXISTS video_tags (file_unique_id TEXT NOT NULL, tag TEXT NOT NULL, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP, PRIMARY KEY(file_unique_id, tag))",
+            "vault_col",
             "CREATE TABLE IF NOT EXISTS captions (file_unique_id TEXT PRIMARY KEY, caption TEXT NOT NULL, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)",
         ]
         with self.get_connection() as conn:
             cur = conn.cursor()
             for statement in tables:
-                cur.execute(statement)
+                if statement == "vault_col":
+                    self._ensure_vault_column(cur)
+                else:
+                    cur.execute(statement)
             cur.close()
+
+    def _ensure_vault_column(self, cur) -> None:
+        """Add vault_msg_id to videos if missing (idempotent on both backends)."""
+        if self.use_postgres:
+            cur.execute("ALTER TABLE videos ADD COLUMN IF NOT EXISTS vault_msg_id BIGINT")
+        else:
+            cur.execute("PRAGMA table_info(videos)")
+            cols = [r[1] for r in cur.fetchall()]
+            if "vault_msg_id" not in cols:
+                cur.execute("ALTER TABLE videos ADD COLUMN vault_msg_id INTEGER")
 
     def _cursor(self, conn):
         return conn.cursor(cursor_factory=RealDictCursor) if self.use_postgres else conn.cursor()
@@ -300,6 +314,41 @@ class Database:
             cur.execute(self._sql("DELETE FROM favorites WHERE file_unique_id=?"), (file_unique_id,))
             cur.close()
         return changed
+
+    def set_vault_msg_id(self, file_unique_id: str, msg_id: int) -> None:
+        with self.get_connection() as conn:
+            cur = conn.cursor()
+            cur.execute(self._sql("UPDATE videos SET vault_msg_id=? WHERE file_unique_id=?"), (int(msg_id), file_unique_id))
+            cur.close()
+
+    def get_vault_msg_id(self, file_unique_id: str) -> Optional[int]:
+        with self.get_connection() as conn:
+            cur = self._cursor(conn)
+            cur.execute(self._sql("SELECT vault_msg_id FROM videos WHERE file_unique_id=?"), (file_unique_id,))
+            row = cur.fetchone()
+            cur.close()
+        if not row:
+            return None
+        val = row["vault_msg_id"] if isinstance(row, dict) else row[0]
+        return int(val) if val is not None else None
+
+    def get_unvaulted_videos(self, limit: int = 100) -> List[Dict[str, Any]]:
+        """Videos not yet mirrored to the vault channel."""
+        with self.get_connection() as conn:
+            cur = self._cursor(conn)
+            cur.execute(self._sql("SELECT file_id,file_unique_id,file_size,duration,width,height,status,created_at FROM videos WHERE vault_msg_id IS NULL ORDER BY id ASC LIMIT ?"), (max(1, min(int(limit), 500)),))
+            rows = cur.fetchall()
+            cur.close()
+        keys = ["file_id", "file_unique_id", "file_size", "duration", "width", "height", "status", "created_at"]
+        return [dict(r) if isinstance(r, dict) else dict(zip(keys, r)) for r in rows]
+
+    def count_unvaulted(self) -> int:
+        with self.get_connection() as conn:
+            cur = conn.cursor()
+            cur.execute("SELECT COUNT(*) FROM videos WHERE vault_msg_id IS NULL")
+            row = cur.fetchone()
+            cur.close()
+        return int(row[0] if row else 0)
 
     def mark_video_sent(self, file_unique_id: str) -> None:
         with self.get_connection() as conn:
