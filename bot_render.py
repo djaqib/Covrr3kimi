@@ -20,7 +20,7 @@ import logging
 import os
 import shlex
 from logging.handlers import RotatingFileHandler
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Union
 
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, InputMediaVideo, BotCommand
 from telegram.error import BadRequest, RetryAfter, TelegramError
@@ -43,20 +43,34 @@ PORT = int(os.getenv("PORT", "10000"))
 RENDER_URL = os.getenv("RENDER_EXTERNAL_URL", "").rstrip("/")
 WEBHOOK_SECRET = os.getenv("WEBHOOK_SECRET", "").strip()
 
-# Backup vault channels (env-based so they survive Render redeploys).
-# Comma-separated list of channel IDs, e.g. "-1001234567890" or "@myvault".
-# The bot must be added to each channel as an admin with post rights.
-BACKUP_CHANNELS: List[int] = []
-for raw in os.getenv("BACKUP_CHANNELS", "").split(","):
-    try:
-        if raw.strip():
-            BACKUP_CHANNELS.append(int(raw.strip()))
-    except ValueError:
-        logger.warning("Ignoring non-numeric value in BACKUP_CHANNELS: %r", raw)
+# Backup channels: ONE env var, one or more channels (comma-separated).
+# Every saved video AND photo is mirrored to ALL listed channels.
+#   BACKUP_CHANNELS=-1001234567890
+#   BACKUP_CHANNELS=-1001234567890,-1009876543210   (two separate backups)
+# Entries may be numeric IDs or @channelusernames. The bot must be an admin
+# with post rights in each channel (the channel can belong to any account).
+# Legacy: a leftover VAULT_CHANNEL_ID is still honoured and merged in.
+def _parse_channels(*raw_values: str) -> List[Union[int, str]]:
+    out: List[Union[int, str]] = []
+    for raw_value in raw_values:
+        for raw in raw_value.split(","):
+            raw = raw.strip()
+            if not raw:
+                continue
+            if raw.lstrip("-").isdigit():
+                ch: Union[int, str] = int(raw)
+            elif raw.startswith("@"):
+                ch = raw
+            else:
+                logger.warning("Ignoring invalid BACKUP_CHANNELS entry: %r", raw)
+                continue
+            if ch not in out:
+                out.append(ch)
+    return out
 
-# Optional disaster-recovery vault: a private channel where the bot mirrors
-# every saved video. Files posted to a channel survive a personal-account ban.
-VAULT_CHANNEL_ID = os.getenv("VAULT_CHANNEL_ID", "").strip()
+
+BACKUP_CHANNELS: List[Union[int, str]] = _parse_channels(
+    os.getenv("BACKUP_CHANNELS", ""), os.getenv("VAULT_CHANNEL_ID", ""))
 
 # Admin IDs: ONLY from the ADMIN_IDS env var. No hardcoded IDs.
 ADMIN_IDS: set[int] = set()
@@ -139,18 +153,26 @@ def vault_caption(uid: str) -> str:
     return "\n".join(parts)
 
 
-async def mirror_to_vault(context: ContextTypes.DEFAULT_TYPE, item: Dict[str, Any]) -> None:
-    """Post one video to the vault channel and record its message id."""
-    if not VAULT_CHANNEL_ID:
-        return
+async def mirror_to_vault(bot, item: Dict[str, Any]) -> bool:
+    """Send one video to every backup channel. Returns True if at least one succeeded.
+
+    The message id from the first channel that succeeds is stored as
+    vault_msg_id (used by /vaultsync and migrate.py)."""
+    if not BACKUP_CHANNELS:
+        return False
     uid = item["file_unique_id"]
-    try:
-        sent = await context.bot.send_video(chat_id=VAULT_CHANNEL_ID, video=item["file_id"],
-                                            caption=vault_caption(uid))
-        db.set_vault_msg_id(uid, sent.message_id)
-        db.increment_stat("vaulted_videos")
-    except TelegramError:
-        logger.exception("Vault mirror failed for %s", uid)
+    caption = vault_caption(uid)
+    recorded = False
+    for ch in BACKUP_CHANNELS:
+        try:
+            sent = await bot.send_video(chat_id=ch, video=item["file_id"], caption=caption)
+            db.increment_stat("vaulted_videos")
+            if not recorded:
+                db.set_vault_msg_id(uid, sent.message_id)
+                recorded = True
+        except TelegramError:
+            logger.exception("Backup to channel %s failed for %s", ch, uid)
+    return recorded
 
 
 # ---------------------------------------------------------------------------
@@ -321,22 +343,8 @@ async def pager_stop(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 # ---------------------------------------------------------------------------
-# Backup vault: mirror every saved video to private channel(s)
+# Backup vault: mirror every saved photo to private channel(s)
 # ---------------------------------------------------------------------------
-async def backup_video_to_vault(bot, item: Dict[str, Any], caption: str = "") -> int:
-    """Send one video to all configured backup channels. Returns count of successes."""
-    if not BACKUP_CHANNELS:
-        return 0
-    ok = 0
-    for ch in BACKUP_CHANNELS:
-        try:
-            await bot.send_video(chat_id=ch, video=item["file_id"], caption=caption)
-            ok += 1
-        except TelegramError:
-            logger.exception("Backup to channel %s failed for %s", ch, item.get("file_unique_id", "?"))
-    return ok
-
-
 async def backup_photo_to_vault(bot, item: Dict[str, Any]) -> int:
     if not BACKUP_CHANNELS:
         return 0
@@ -364,7 +372,6 @@ async def vault_status(update: Update, context: ContextTypes.DEFAULT_TYPE):
         try:
             chat = await context.bot.get_chat(ch)
             title = getattr(chat, "title", None) or str(ch)
-            count = db.get_stat("vault_backed_up")
             lines.append(f"✅ <code>{ch}</code> — {html.escape(title)}")
         except TelegramError:
             lines.append(f"⚠️ <code>{ch}</code> — unreachable (check bot is admin)")
@@ -638,8 +645,8 @@ async def video_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             db.remove_video_record(uid)
             raise
         db.increment_stat("total_videos")
-        if VAULT_CHANNEL_ID:
-            await mirror_to_vault(context, payload)
+        if BACKUP_CHANNELS:
+            await mirror_to_vault(context.bot, payload)
         counts = db.get_counts(update.effective_user.id)
         batch_size = int(settings.get("album_size", 10))
         if counts["queued"] >= batch_size and not settings.get("pause_auto_flush", False):
@@ -1150,12 +1157,13 @@ async def export_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def vault_status_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not is_admin(update):
         return await deny(update)
-    if not VAULT_CHANNEL_ID:
+    if not BACKUP_CHANNELS:
         await update.effective_message.reply_text(
-            "🗄 Vault is not configured.\n\n"
+            "🗄 Backup is not configured.\n\n"
             "1. Create a private channel in Telegram\n"
             "2. Add this bot as an admin (post permission)\n"
-            "3. Set VAULT_CHANNEL_ID in Render env vars (e.g. -1001234567890)\n"
+            "3. Set BACKUP_CHANNELS in Render env vars (e.g. -1001234567890, "
+            "or -1001234567890,-1009876543210 for two backups)\n"
             "4. Redeploy, then run /vaultsync to backfill existing videos")
         return
     total = db.count_videos_smart()
@@ -1163,7 +1171,7 @@ async def vault_status_command(update: Update, context: ContextTypes.DEFAULT_TYP
     vaulted = total - unvaulted
     await update.effective_message.reply_text(
         f"🗄 <b>Vault status</b>\n\n"
-        f"Channel: <code>{html.escape(VAULT_CHANNEL_ID)}</code>\n"
+        f"Channels: <code>{html.escape(', '.join(str(c) for c in BACKUP_CHANNELS))}</code>\n"
         f"📚 Library total: {total}\n"
         f"✅ Mirrored to vault: {vaulted}\n"
         f"⏳ Not yet mirrored: {unvaulted}\n"
@@ -1175,8 +1183,8 @@ async def vault_sync_command(update: Update, context: ContextTypes.DEFAULT_TYPE)
     """Backfill: send all unvaulted videos to the vault channel."""
     if not is_admin(update):
         return await deny(update)
-    if not VAULT_CHANNEL_ID:
-        await update.effective_message.reply_text("Vault is not configured. See /vaultstatus for setup steps.")
+    if not BACKUP_CHANNELS:
+        await update.effective_message.reply_text("Backup is not configured. See /vaultstatus for setup steps.")
         return
     chat_id = update.effective_chat.id
     if chat_id in SCAN_LOCKS:
@@ -1193,14 +1201,9 @@ async def vault_sync_command(update: Update, context: ContextTypes.DEFAULT_TYPE)
     failed = 0
     try:
         for item in pending:
-            try:
-                sent = await context.bot.send_video(chat_id=VAULT_CHANNEL_ID, video=item["file_id"],
-                                                    caption=vault_caption(item["file_unique_id"]))
-                db.set_vault_msg_id(item["file_unique_id"], sent.message_id)
-                db.increment_stat("vaulted_videos")
+            if await mirror_to_vault(context.bot, item):
                 done += 1
-            except TelegramError:
-                logger.exception("Vault sync failed for %s", item["file_unique_id"])
+            else:
                 failed += 1
             if (done + failed) % 10 == 0:
                 try:
