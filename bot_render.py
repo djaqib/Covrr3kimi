@@ -296,7 +296,7 @@ async def _send_pager_page(update: Update, context: ContextTypes.DEFAULT_TYPE,
             s, f = await _send_singles(context.bot, chat_id, batch)
             sent_ids.extend(s); failed_ids.extend(f)
         if offset + 10 < len(items):
-            await asyncio.sleep(1)
+            await asyncio.sleep(4)
     return sent_ids, failed_ids
 
 
@@ -520,7 +520,7 @@ async def _send_video_batches(bot, chat_id: int, items: List[Dict[str, Any]]) ->
             s, f = await _send_singles(bot, chat_id, batch)
             sent_ids.extend(s); failed_ids.extend(f)
         if offset + 10 < len(items):
-            await asyncio.sleep(1)
+            await asyncio.sleep(3)
     return sent_ids, failed_ids
 
 
