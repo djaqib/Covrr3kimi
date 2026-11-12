@@ -96,7 +96,7 @@ SCAN_LOCKS: set[int] = set()
 SEARCH_PAGE_SIZE = 10      # search results per page (sent as cards)
 SEND_PAGE_SIZE = 20        # videos per page for library-wide sends
 RECENT_COUNT = 40          # /recent page size
-CLEAN_CONCURRENCY = 6      # parallel get_file probes during /clean
+CLEAN_CONCURRENCY = 3      # parallel get_file probes during /clean
 CLEAN_CHUNK = 60           # items between progress updates
 
 
@@ -1025,17 +1025,26 @@ async def clean_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     unknown = 0
     sem = asyncio.Semaphore(CLEAN_CONCURRENCY)
 
+    DEAD_MARKERS = ("file_id_invalid", "wrong file_id", "file is already deleted",
+                    "file not found", "bad file_id", "invalid file_id")
+
     async def check_one(kind: str, item: Dict[str, Any]) -> None:
         nonlocal unknown
         async with sem:
-            retries = 2
+            retries = 3
             while retries > 0:
                 retries -= 1
                 try:
                     await context.bot.get_file(item["file_id"])
                     return  # file exists on Telegram
-                except BadRequest:
-                    (dead_photos if kind == "photo" else dead_videos).append(item["file_unique_id"])
+                except BadRequest as exc:
+                    msg = str(exc).lower()
+                    if any(m in msg for m in DEAD_MARKERS):
+                        (dead_photos if kind == "photo" else dead_videos).append(item["file_unique_id"])
+                        return
+                    # Some other BadRequest (e.g. file too big to download via bot)
+                    # — the file is ALIVE, just not downloadable. Count as unknown.
+                    unknown += 1
                     return
                 except RetryAfter as exc:
                     await asyncio.sleep(float(exc.retry_after) + 1)
@@ -1057,7 +1066,7 @@ async def clean_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     f"Dead found so far: {len(dead_videos) + len(dead_photos)}")
             except TelegramError:
                 pass
-            await asyncio.sleep(0.3)
+            await asyncio.sleep(1.0)
     finally:
         SCAN_LOCKS.discard(chat_id)
 
