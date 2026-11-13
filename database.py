@@ -659,19 +659,6 @@ class Database:
         keys = ["file_id", "file_unique_id", "file_size", "created_at"]
         return [dict(r) if isinstance(r, dict) else dict(zip(keys, r)) for r in rows]
 
-    def delete_videos_batch(self, unique_ids: List[str]) -> int:
-        """Delete multiple videos fully (library, queue, tags, captions). Returns count removed."""
-        removed = 0
-        with self.get_connection() as conn:
-            cur = conn.cursor()
-            for uid in unique_ids:
-                cur.execute(self._sql("DELETE FROM videos WHERE file_unique_id=?"), (uid,))
-                removed += cur.rowcount
-                cur.execute(self._sql("DELETE FROM queue_items WHERE file_unique_id=?"), (uid,))
-                cur.execute(self._sql("DELETE FROM video_tags WHERE file_unique_id=?"), (uid,))
-                cur.execute(self._sql("DELETE FROM captions WHERE file_unique_id=?"), (uid,))
-            cur.close()
-        return removed
 
     def delete_photos_batch(self, unique_ids: List[str]) -> int:
         """Delete multiple photos. Returns count removed."""
