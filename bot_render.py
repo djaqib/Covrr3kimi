@@ -37,6 +37,7 @@ logging.basicConfig(
     handlers=[logging.StreamHandler(), RotatingFileHandler("bot.log", maxBytes=2_000_000, backupCount=2)],
 )
 logger = logging.getLogger("video_bot")
+logging.getLogger("httpx").setLevel(logging.WARNING)
 
 BOT_TOKEN = os.getenv("BOT_TOKEN", "").strip()
 PORT = int(os.getenv("PORT", "10000"))
