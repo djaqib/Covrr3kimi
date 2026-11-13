@@ -94,9 +94,9 @@ flush_locks: set[tuple] = set()
 SCAN_LOCKS: set[int] = set()
 
 # Page sizes
-SEARCH_PAGE_SIZE = 10      # search results per page (sent as cards)
-SEND_PAGE_SIZE = 20        # videos per page for library-wide sends
-RECENT_COUNT = 40          # /recent page size
+SEARCH_PAGE_SIZE = 20      # search results per page (sent as cards)
+SEND_PAGE_SIZE = 40        # videos per page for library-wide sends
+RECENT_COUNT = 60          # /recent page size
 CLEAN_CONCURRENCY = 3      # parallel get_file probes during /clean
 CLEAN_CHUNK = 60           # items between progress updates
 
